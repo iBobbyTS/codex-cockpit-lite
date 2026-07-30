@@ -233,4 +233,4 @@ __marimo__/
 .DS_Store
 
 # docs
-tauri-v2-docs.md
+library-docs/

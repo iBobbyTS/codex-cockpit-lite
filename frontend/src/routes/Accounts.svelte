@@ -43,12 +43,11 @@
         auth_json: importJson.trim() || '{}',
         name: importName.trim() || 'Codex Account',
       });
-      const rid = result.id;
-      refreshing = [...refreshing, rid];
-      api('POST', '/api/accounts/' + rid + '/refresh').then(() => {
-        refreshing = refreshing.filter(x => x !== rid);
+      refreshing.push(result.id);
+      api('POST', '/api/accounts/' + result.id + '/refresh').then(() => {
+        const i = refreshing.indexOf(result.id); if (i >= 0) refreshing.splice(i, 1);
       }).catch(() => {
-        refreshing = refreshing.filter(x => x !== rid);
+        const i = refreshing.indexOf(result.id); if (i >= 0) refreshing.splice(i, 1);
       });
       await refreshAll();
     } catch (e) {
@@ -78,11 +77,11 @@
         });
       }
       // Refresh quota for the overwritten account
-      refreshing = [...refreshing, duplicate];
+      refreshing.push(duplicate);
       api('POST', '/api/accounts/' + duplicate + '/refresh').then(() => {
-        refreshing = refreshing.filter(x => x !== duplicate);
+        const i = refreshing.indexOf(duplicate); if (i >= 0) refreshing.splice(i, 1);
       }).catch(() => {
-        refreshing = refreshing.filter(x => x !== duplicate);
+        const i = refreshing.indexOf(duplicate); if (i >= 0) refreshing.splice(i, 1);
       });
       duplicate = null;
       pendingImport = null;
@@ -99,12 +98,11 @@
     importing = true;
     try {
       const result = await api('POST', '/api/accounts/import-from-codex');
-      const rid = result.id;
-      refreshing = [...refreshing, rid];
-      api('POST', '/api/accounts/' + rid + '/refresh').then(() => {
-        refreshing = refreshing.filter(x => x !== rid);
+      refreshing.push(result.id);
+      api('POST', '/api/accounts/' + result.id + '/refresh').then(() => {
+        const i = refreshing.indexOf(result.id); if (i >= 0) refreshing.splice(i, 1);
       }).catch(() => {
-        refreshing = refreshing.filter(x => x !== rid);
+        const i = refreshing.indexOf(result.id); if (i >= 0) refreshing.splice(i, 1);
       });
       await refreshAll();
     } catch (e) {
