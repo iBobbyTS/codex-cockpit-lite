@@ -224,7 +224,7 @@
     border-radius: 2.5px;
     transition: width 0.3s;
   }
-  .quota-pct { font-size: 12px; font-weight: 600; min-width: 28px; text-align: right; }
+  .quota-pct { font-size: 12px; font-weight: 600; width: 32px; text-align: right; }
   .quota-pct.low { color: var(--warning); }
   .quota-window { font-size: 10px; color: var(--text-muted); }
 
