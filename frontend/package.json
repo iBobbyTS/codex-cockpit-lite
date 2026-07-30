@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build && node write-redirect.cjs dist",
+    "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },

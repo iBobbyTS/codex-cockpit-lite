@@ -1,5 +1,5 @@
 <script>
-  const API = '';
+  const API = 'http://localhost:8844';
   let config = $state(null);
 
   async function loadConfig() {
