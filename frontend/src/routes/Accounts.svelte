@@ -1,6 +1,10 @@
 <script>
-  import { fetch } from '@tauri-apps/plugin-http';
-  const API = 'http://127.0.0.1:8844';
+  import { invoke } from '@tauri-apps/api/core';
+
+  async function api(method, path, body) {
+    const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
+    return JSON.parse(text);
+  }
   let config = $state(null);
   let accounts = $state([]);
   let showImport = $state(false);
@@ -10,12 +14,12 @@
 
   async function refreshAll() {
     try {
-      const [cfgResp, accResp] = await Promise.all([
-        fetch(API + '/api/config'),
-        fetch(API + '/api/accounts'),
+      const [cfg, acc] = await Promise.all([
+        api('GET', '/api/config'),
+        api('GET', '/api/accounts'),
       ]);
-      config = await cfgResp.json();
-      accounts = await accResp.json();
+      config = cfg;
+      accounts = acc;
     } catch (e) {
       errorMsg = '读取配置失败: ' + String(e);
     }
@@ -24,21 +28,15 @@
   async function importAccount() {
     errorMsg = '';
     try {
-      const resp = await fetch(API + '/api/accounts/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          auth_json: importJson.trim(),
-          name: importName.trim() || 'Codex Account',
-        }),
+      const result = await api('POST', '/api/accounts/import', {
+        auth_json: importJson.trim(),
+        name: importName.trim() || 'Codex Account',
       });
-      const result = await resp.json();
-      if (!resp.ok) throw new Error(result.detail || 'Import failed');
       showImport = false;
       importJson = '';
       importName = '';
       // Refresh quota immediately
-      fetch(API + '/api/accounts/' + result.id + '/refresh', { method: 'POST' }).catch(() => {});
+      api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
       await refreshAll();
     } catch (e) {
       errorMsg = '导入失败: ' + String(e);
@@ -48,10 +46,8 @@
   async function importOfficial() {
     errorMsg = '';
     try {
-      const resp = await fetch(API + '/api/accounts/import-from-codex', { method: 'POST' });
-      const result = await resp.json();
-      if (!resp.ok) throw new Error(result.detail || 'Import failed');
-      fetch(API + '/api/accounts/' + result.id + '/refresh', { method: 'POST' }).catch(() => {});
+      const result = await api('POST', '/api/accounts/import-from-codex');
+      api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
       await refreshAll();
     } catch (e) {
       errorMsg = '从 ~/.codex 导入失败: ' + String(e);
@@ -62,11 +58,7 @@
     if (!confirm('确认删除此账号？')) return;
     errorMsg = '';
     try {
-      const resp = await fetch(API + '/api/accounts/' + id, { method: 'DELETE' });
-      if (!resp.ok) {
-        const err = await resp.json();
-        throw new Error(err.detail || 'Delete failed');
-      }
+      await api('DELETE', '/api/accounts/' + id);
       await refreshAll();
     } catch (e) {
       errorMsg = '删除失败: ' + String(e);
@@ -77,11 +69,7 @@
   async function toggleAccount(id, enabled) {
     errorMsg = '';
     try {
-      await fetch(API + '/api/accounts/' + id + '/toggle', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      });
+      await api('PUT', '/api/accounts/' + id + '/toggle', { enabled });
       await refreshAll();
     } catch (e) {
       errorMsg = String(e);

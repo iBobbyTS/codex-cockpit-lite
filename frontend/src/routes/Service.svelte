@@ -1,6 +1,10 @@
 <script>
-  import { fetch } from '@tauri-apps/plugin-http';
-  const API = 'http://127.0.0.1:8844';
+  import { invoke } from '@tauri-apps/api/core';
+
+  async function api(method, path, body) {
+    const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
+    return JSON.parse(text);
+  }
   let config = $state(null);
   let accounts = $state([]);
   let status = $state(null);
@@ -10,30 +14,27 @@
 
   async function loadConfig() {
     try {
-      const resp = await fetch(API + '/api/config');
-      config = await resp.json();
+      config = await api('GET', '/api/config');
     } catch {}
   }
 
   async function loadAccounts() {
     try {
-      const resp = await fetch(API + '/api/accounts');
-      accounts = await resp.json();
+      accounts = await api('GET', '/api/accounts');
     } catch {}
   }
 
   async function loadStatus() {
     try {
-      const resp = await fetch(API + '/v1/cockpit/status');
-      if (resp.ok) {
-        status = await resp.json();
+      status = await api('GET', '/v1/cockpit/status');
+      if (status) {
         backendRunning = true;
         if (status?.actual_port && status.actual_port !== config?.api?.port) {
           reportedPort = status.actual_port;
           portMismatch = true;
           if (config) {
             config.api.port = status.actual_port;
-            await fetch(API + '/api/config', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(config) });
+            await api('PUT', '/api/config', config);
           }
         } else {
           portMismatch = false;
@@ -46,7 +47,7 @@
 
   async function saveAutoSwitch() {
     if (!config) return;
-    await fetch(API + '/api/config', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(config) });
+    await api('PUT', '/api/config', config);
   }
 
   $effect(() => { loadConfig(); loadAccounts(); });

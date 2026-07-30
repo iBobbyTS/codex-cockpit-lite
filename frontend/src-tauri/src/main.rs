@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    codex_cockpit_lite_lib::main()
+    codex_cockpit_lite_lib::run()
 }

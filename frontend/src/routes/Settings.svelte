@@ -1,22 +1,21 @@
 <script>
-  import { fetch } from '@tauri-apps/plugin-http';
-  const API = 'http://127.0.0.1:8844';
+  import { invoke } from '@tauri-apps/api/core';
+
+  async function api(method, path, body) {
+    const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
+    return JSON.parse(text);
+  }
   let config = $state(null);
 
   async function loadConfig() {
     try {
-      const resp = await fetch(API + '/api/config');
-      config = await resp.json();
+      config = await api('GET', '/api/config');
     } catch {}
   }
 
   async function save() {
     if (!config) return;
-    await fetch(API + '/api/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    });
+    await api('PUT', '/api/config', config);
   }
 
   $effect(() => { loadConfig(); });
