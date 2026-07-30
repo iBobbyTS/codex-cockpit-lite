@@ -38,6 +38,15 @@ def _cd() -> Path:
     return _config_dir or get_config_dir()
 
 
+def _find_account_by_email(email: str):
+    if not email:
+        return None
+    for meta in list_account_metas(_cd()):
+        if meta.email.lower() == email.lower():
+            return meta
+    return None
+
+
 # ─── Config ───
 
 @router.get("/config")
@@ -90,11 +99,7 @@ async def import_account(req: Request):
     if (auth_data.get("auth_mode") or "").lower() != "chatgpt":
         raise HTTPException(400, "UNSUPPORTED_AUTH: Codex Cockpit Lite 只支持 ChatGPT (OAuth) 登录")
 
-    account_id = str(uuid.uuid4())
-    ad = account_dir(account_id, _cd())
-    ad.mkdir(parents=True, exist_ok=True)
-    (ad / "auth.json").write_text(json.dumps(auth_data, indent=2))
-
+    # Extract email for dedup
     email = ""
     if "tokens" in auth_data and "id_token" in auth_data["tokens"]:
         import jwt
@@ -108,6 +113,17 @@ async def import_account(req: Request):
 
     if not name:
         name = email.split("@")[0] if email else "Codex Account"
+
+    # Dedup by email: update existing account if same email found
+    existing = _find_account_by_email(email)
+    if existing:
+        account_id = existing.id
+    else:
+        account_id = str(uuid.uuid4())
+
+    ad = account_dir(account_id, _cd())
+    ad.mkdir(parents=True, exist_ok=True)
+    (ad / "auth.json").write_text(json.dumps(auth_data, indent=2))
 
     meta = AccountMeta(
         id=account_id,
@@ -153,7 +169,14 @@ async def import_from_codex():
         raise HTTPException(400, "UNSUPPORTED_AUTH: Codex Cockpit Lite 只支持 ChatGPT (OAuth) 登录")
 
     name = email.split("@")[0] if email else "Codex Account"
-    account_id = str(uuid.uuid4())
+
+    # Dedup by email
+    existing = _find_account_by_email(email)
+    if existing:
+        account_id = existing.id
+    else:
+        account_id = str(uuid.uuid4())
+
     ad = account_dir(account_id, _cd())
     ad.mkdir(parents=True, exist_ok=True)
     (ad / "auth.json").write_text(auth_json)
