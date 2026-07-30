@@ -43,8 +43,13 @@
         auth_json: importJson.trim() || '{}',
         name: importName.trim() || 'Codex Account',
       });
-      refreshing = [...refreshing, result.id];
-      api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {}).finally(() => { refreshing = refreshing.filter(x => x !== result.id); });
+      const rid = result.id;
+      refreshing = [...refreshing, rid];
+      api('POST', '/api/accounts/' + rid + '/refresh').then(() => {
+        refreshing = refreshing.filter(x => x !== rid);
+      }).catch(() => {
+        refreshing = refreshing.filter(x => x !== rid);
+      });
       await refreshAll();
     } catch (e) {
       const msg = String(e);
@@ -74,7 +79,11 @@
       }
       // Refresh quota for the overwritten account
       refreshing = [...refreshing, duplicate];
-      api('POST', '/api/accounts/' + duplicate + '/refresh').catch(() => {}).finally(() => { refreshing = refreshing.filter(x => x !== duplicate); });
+      api('POST', '/api/accounts/' + duplicate + '/refresh').then(() => {
+        refreshing = refreshing.filter(x => x !== duplicate);
+      }).catch(() => {
+        refreshing = refreshing.filter(x => x !== duplicate);
+      });
       duplicate = null;
       pendingImport = null;
       await refreshAll();
@@ -90,8 +99,13 @@
     importing = true;
     try {
       const result = await api('POST', '/api/accounts/import-from-codex');
-      refreshing = [...refreshing, result.id];
-      api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {}).finally(() => { refreshing = refreshing.filter(x => x !== result.id); });
+      const rid = result.id;
+      refreshing = [...refreshing, rid];
+      api('POST', '/api/accounts/' + rid + '/refresh').then(() => {
+        refreshing = refreshing.filter(x => x !== rid);
+      }).catch(() => {
+        refreshing = refreshing.filter(x => x !== rid);
+      });
       await refreshAll();
     } catch (e) {
       const msg = String(e);
