@@ -8,6 +8,7 @@
   let config = $state(null);
   let accounts = $state([]);
   let showImport = $state(false);
+  let importing = $state(false);
   let deleteTarget = $state(null);
   let importJson = $state('');
   let importName = $state('');
@@ -28,30 +29,36 @@
 
   async function importAccount() {
     errorMsg = '';
+    // Close panel immediately, show loading
+    showImport = false;
+    importJson = '';
+    importName = '';
+    importing = true;
     try {
       const result = await api('POST', '/api/accounts/import', {
-        auth_json: importJson.trim(),
+        auth_json: importJson.trim() || '{}',
         name: importName.trim() || 'Codex Account',
       });
-      showImport = false;
-      importJson = '';
-      importName = '';
-      // Refresh quota immediately
       api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
       await refreshAll();
     } catch (e) {
       errorMsg = '导入失败: ' + String(e);
+    } finally {
+      importing = false;
     }
   }
 
   async function importOfficial() {
     errorMsg = '';
+    importing = true;
     try {
       const result = await api('POST', '/api/accounts/import-from-codex');
       api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
       await refreshAll();
     } catch (e) {
       errorMsg = '从 ~/.codex 导入失败: ' + String(e);
+    } finally {
+      importing = false;
     }
   }
 
@@ -134,6 +141,10 @@
         </div>
       </div>
     </div>
+  {/if}
+
+  {#if importing}
+    <p class="loading">正在导入...</p>
   {/if}
 
   <div class="account-list">
@@ -246,6 +257,8 @@
 
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
   .empty { color: var(--text-muted); text-align: center; padding: 40px; }
+
+  .loading { color: var(--accent); text-align: center; padding: 12px; font-size: 14px; }
 
   .modal-backdrop {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
