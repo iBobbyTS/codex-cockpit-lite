@@ -46,6 +46,9 @@ fn find_python() -> Option<String> {
 }
 
 fn start_and_wait() {
+    // Kill any stale Python backends from previous runs
+    let _ = std::process::Command::new("pkill").arg("-f").arg("main.py").output();
+
     let python = match find_python() {
         Some(p) => p,
         None => {
