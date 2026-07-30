@@ -7,6 +7,32 @@ use std::sync::Mutex;
 static BACKEND: Mutex<Option<Child>> = Mutex::new(None);
 static BACKEND_PORT: Mutex<u16> = Mutex::new(8844);
 
+fn pid_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".config").join("codex-cockpit").join("backend.pid")
+}
+
+fn kill_previous_backend() {
+    let path = pid_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(pid) = content.trim().parse::<i32>() {
+            // kill -0 checks if process exists without sending a signal
+            let alive = std::process::Command::new("kill")
+                .arg("-0").arg(pid.to_string())
+                .output().map(|o| o.status.success()).unwrap_or(false);
+            if alive {
+                let _ = std::process::Command::new("kill").arg(pid.to_string()).output();
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+fn save_pid(pid: u32) {
+    let _ = std::fs::write(pid_path(), pid.to_string());
+}
+
 fn log(msg: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true)
         .open("/tmp/codex-cockpit.log")
@@ -17,26 +43,21 @@ fn log(msg: &str) {
 }
 
 fn find_backend_main() -> Option<PathBuf> {
-    // Try relative to exe first (works both in dev and bundled app)
     if let Ok(exe) = std::env::current_exe() {
         let candidate = exe.parent()?.parent()?.join("Resources").join("backend").join("main.py");
         if candidate.exists() { return Some(candidate); }
     }
-    // Fallback: relative to cwd (dev mode)
     if let Ok(cwd) = std::env::current_dir() {
         let candidate = cwd.join("..").join("backend").join("main.py");
-        let canonical = std::fs::canonicalize(&candidate).ok()?;
-        if canonical.exists() { return Some(canonical); }
+        if let Ok(canonical) = std::fs::canonicalize(&candidate) {
+            if canonical.exists() { return Some(canonical); }
+        }
     }
     None
 }
 
 fn find_python() -> Option<String> {
-    // Try CODEX_BACKEND_PYTHON env var first
-    if let Ok(p) = std::env::var("CODEX_BACKEND_PYTHON") {
-        return Some(p);
-    }
-    // Try common python paths
+    if let Ok(p) = std::env::var("CODEX_BACKEND_PYTHON") { return Some(p); }
     for path in &["python3", "/usr/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"] {
         if std::process::Command::new(path).arg("--version").output().is_ok() {
             return Some(path.to_string());
@@ -46,52 +67,31 @@ fn find_python() -> Option<String> {
 }
 
 fn start_and_wait() {
-    // Kill any stale Python backends from previous runs
-    let _ = std::process::Command::new("pkill").arg("-f").arg("main.py").output();
+    kill_previous_backend();
 
     let python = match find_python() {
         Some(p) => p,
-        None => {
-            log("[cockpit] FATAL: python3 not found in PATH. Set CODEX_BACKEND_PYTHON env var.");
-            return;
-        }
+        None => { log("[cockpit] FATAL: python3 not found"); return; }
     };
-
     let main_py = match find_backend_main() {
         Some(p) => p,
-        None => {
-            log(&format!("[cockpit] FATAL: Cannot find backend/main.py"));
-            if let Ok(exe) = std::env::current_exe() {
-                let candidate = exe.parent().unwrap_or(std::path::Path::new("."))
-                    .parent().unwrap_or(std::path::Path::new("."))
-                    .join("Resources").join("backend").join("main.py");
-                log(&format!("[cockpit] Expected at: {}", candidate.display()));
-                log(&format!("[cockpit] Exists: {}", candidate.exists()));
-            }
-            return;
-        }
+        None => { log("[cockpit] FATAL: Cannot find backend/main.py"); return; }
     };
 
     log(&format!("[cockpit] Spawning: {} {}", python, main_py.display()));
 
-    let mut child = match Command::new(&python)
-        .arg(&main_py)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    let mut child = match Command::new(&python).arg(&main_py)
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
     {
         Ok(c) => c,
-        Err(e) => {
-            log(&format!("[cockpit] FATAL: spawn failed: {}", e));
-            return;
-        }
+        Err(e) => { log(&format!("[cockpit] FATAL: spawn failed: {}", e)); return; }
     };
 
-    // Read PORT= from stdout, discard remaining output in background
+    save_pid(child.id());
+
     if let Some(stdout) = child.stdout.take() {
         let reader = std::io::BufReader::new(stdout);
         for line in reader.lines().flatten() {
-            log(&format!("[cockpit] [stdout] {}", line));
             if let Some(port_str) = line.strip_prefix("PORT=") {
                 if let Ok(port) = port_str.trim().parse::<u16>() {
                     log(&format!("[cockpit] Backend ready on port {}", port));
@@ -102,7 +102,6 @@ fn start_and_wait() {
         }
     }
 
-    // Drain stderr in background (never blocks start_and_wait)
     if let Some(stderr) = child.stderr.take() {
         std::thread::spawn(move || {
             let reader = std::io::BufReader::new(stderr);
@@ -113,6 +112,16 @@ fn start_and_wait() {
     }
 
     *BACKEND.lock().unwrap() = Some(child);
+}
+
+fn stop_backend() {
+    if let Ok(mut proc) = BACKEND.lock() {
+        if let Some(mut child) = proc.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    let _ = std::fs::remove_file(pid_path());
 }
 
 #[tauri::command]
@@ -147,13 +156,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![api_call])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                log("[cockpit] Window destroyed, killing backend");
-                if let Ok(mut proc) = BACKEND.lock() {
-                    if let Some(mut child) = proc.take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                }
+                stop_backend();
             }
         })
         .run(tauri::generate_context!())
