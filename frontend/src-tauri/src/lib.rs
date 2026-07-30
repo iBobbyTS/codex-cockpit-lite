@@ -153,17 +153,24 @@ async fn api_call(method: String, path: String, body: Option<String>) -> Result<
             Ok(r) => log(&format!("[cockpit] api_call OK {} {} -> {}", m, p, r.status())),
             Err(e) => log(&format!("[cockpit] api_call ERR {} {} -> {}", m, p, e)),
         }
-        // On error, try to extract detail from response body
-        let resp = result.map_err(|e| {
-            let msg = e.to_string();
-            // ureq includes response body in error for 4xx/5xx
-            if msg.contains("UNSUPPORTED_AUTH") {
-                msg.replace("UNSUPPORTED_AUTH: ", "")
-            } else {
-                format!("请求失败: {}", msg)
+        match result {
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.into_string().unwrap_or_default();
+                if status >= 400 {
+                    // Try to extract detail from JSON error response
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+                        if let Some(detail) = val.get("detail").and_then(|d| d.as_str()) {
+                            let msg = detail.replace("UNSUPPORTED_AUTH: ", "");
+                            return Err(msg);
+                        }
+                    }
+                    return Err(format!("请求失败: {}", body));
+                }
+                Ok(body)
             }
-        })?;
-        resp.into_string().map_err(|e| format!("Read error: {}", e))
+            Err(e) => Err(format!("请求失败: {}", e)),
+        }
     }).await.map_err(|e| format!("Spawn error: {}", e))??;
     Ok(resp)
 }
