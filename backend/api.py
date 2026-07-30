@@ -104,14 +104,15 @@ async def import_account(req: Request):
     if not name:
         name = email.split("@")[0] if email else "Codex Account"
 
-    # Detect auth mode
-    auth_mode = "oauth"
-    if auth_data.get("agent_identity"):
-        auth_mode = "agent_identity"
-    elif auth_data.get("auth_mode") == "apikey" or auth_data.get("OPENAI_API_KEY"):
-        auth_mode = "apikey"
-    elif auth_data.get("auth_mode") == "apikey" or auth_data.get("OPENAI_API_KEY"):
-        auth_mode = "apikey"
+    # Only allow ChatGPT OAuth login
+    is_oauth = (
+        auth_data.get("tokens") is not None
+        and not auth_data.get("agent_identity")
+        and auth_data.get("auth_mode") != "apikey"
+        and not auth_data.get("OPENAI_API_KEY")
+    )
+    if not is_oauth:
+        raise HTTPException(400, "UNSUPPORTED_AUTH: Codex Cockpit Lite 只支持 ChatGPT (OAuth) 登录")
 
     meta = AccountMeta(
         id=account_id,
@@ -159,11 +160,15 @@ async def import_from_codex():
     ad.mkdir(parents=True, exist_ok=True)
     (ad / "auth.json").write_text(auth_json)
 
-    auth_mode = "oauth"
-    if auth_data.get("agent_identity"):
-        auth_mode = "agent_identity"
-    elif auth_data.get("auth_mode") == "apikey":
-        auth_mode = "apikey"
+    # Only allow ChatGPT OAuth login
+    is_oauth = (
+        auth_data.get("tokens") is not None
+        and not auth_data.get("agent_identity")
+        and auth_data.get("auth_mode") != "apikey"
+        and not auth_data.get("OPENAI_API_KEY")
+    )
+    if not is_oauth:
+        raise HTTPException(400, "UNSUPPORTED_AUTH: Codex Cockpit Lite 只支持 ChatGPT (OAuth) 登录")
 
     meta = AccountMeta(
         id=account_id,

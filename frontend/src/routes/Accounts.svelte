@@ -42,9 +42,10 @@
       });
       api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
       await refreshAll();
-      if (result.auth_mode !== 'oauth') { unsupportedModal = true; }
     } catch (e) {
-      errorMsg = '导入失败: ' + String(e);
+      const msg = String(e);
+      if (msg.includes('UNSUPPORTED_AUTH')) { unsupportedModal = true; }
+      else { errorMsg = '导入失败: ' + msg; }
     } finally {
       importing = false;
     }
@@ -57,9 +58,10 @@
       const result = await api('POST', '/api/accounts/import-from-codex');
       api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
       await refreshAll();
-      if (result.auth_mode !== 'oauth') { unsupportedModal = true; }
     } catch (e) {
-      errorMsg = '从 ~/.codex 导入失败: ' + String(e);
+      const msg = String(e);
+      if (msg.includes('UNSUPPORTED_AUTH')) { unsupportedModal = true; }
+      else { errorMsg = '从 ~/.codex 导入失败: ' + msg; }
     } finally {
       importing = false;
     }
