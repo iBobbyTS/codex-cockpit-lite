@@ -157,14 +157,6 @@
     </div>
   </div>
 
-  {#if errorMsg}
-    <div class="card error-banner">
-      <span>❌</span>
-      <span>{errorMsg}</span>
-      <button class="mismatch-close" onclick={() => errorMsg = ''}>✕</button>
-    </div>
-  {/if}
-
   {#if showImport}
     <div class="card import-panel">
       <textarea
@@ -192,7 +184,11 @@
   {/if}
 
   {#if importing}
-    <p class="loading">正在导入...</p>
+    <div class="toast">正在导入...</div>
+  {/if}
+
+  {#if errorMsg}
+    <div class="toast error">{errorMsg} <button class="toast-close" onclick={() => errorMsg = ''}>✕</button></div>
   {/if}
 
   {#if duplicate}
@@ -334,7 +330,7 @@
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
   .empty { color: var(--text-muted); text-align: center; padding: 40px; }
 
-  .loading { color: var(--accent); text-align: center; padding: 12px; font-size: 14px; }
+  
 
   .modal-backdrop {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -355,23 +351,16 @@
   .modal p { font-size: 13px; color: var(--text-muted); margin-bottom: 20px; line-height: 1.5; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
 
-  .error-banner {
-    background: rgba(239, 68, 68, 0.12);
-    border-color: var(--danger);
-    margin-bottom: 16px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 14px;
+
+  .toast {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: white;
+    padding: 8px 20px; border-radius: 8px;
+    font-size: 14px; z-index: 200;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    display: flex; align-items: center; gap: 10px;
   }
-  .error-banner .mismatch-close {
-    margin-left: auto;
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-size: 16px;
-    cursor: pointer;
-    padding: 0 4px;
-  }
-  .error-banner .mismatch-close:hover { color: var(--text); }
+  .toast.error { background: var(--danger); }
+  .toast-close { background: none; border: none; color: white; font-size: 14px; cursor: pointer; padding: 0 2px; }
+
 </style>
