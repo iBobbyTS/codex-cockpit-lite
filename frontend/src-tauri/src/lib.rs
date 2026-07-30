@@ -16,9 +16,23 @@ fn find_backend_main() -> Option<PathBuf> {
     None
 }
 
+fn backend_port() -> u16 {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let config_path = PathBuf::from(home).join(".config").join("codex-cockpit").join("config.json");
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(port) = config.get("api").and_then(|a| a.get("port")).and_then(|p| p.as_u64()) {
+                return port as u16;
+            }
+        }
+    }
+    8844
+}
+
 #[tauri::command]
 fn api_call(method: String, path: String, body: Option<String>) -> Result<String, String> {
-    let url = format!("http://127.0.0.1:8844{}", path);
+    let port = backend_port();
+    let url = format!("http://127.0.0.1:{}{}", port, path);
     let resp = match method.as_str() {
         "GET" => ureq::get(&url).call(),
         "POST" => {
@@ -46,6 +60,9 @@ fn api_call(method: String, path: String, body: Option<String>) -> Result<String
 }
 
 fn start_python_backend() {
+    // Kill any existing backend on the same port
+    let _ = std::process::Command::new("pkill").arg("-f").arg("main.py").output();
+
     let python = std::env::var("CODEX_BACKEND_PYTHON").unwrap_or_else(|_| "python3".into());
     let main_py = match find_backend_main() {
         Some(p) => p,
