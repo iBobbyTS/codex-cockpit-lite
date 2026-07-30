@@ -110,6 +110,8 @@ async def import_account(req: Request):
         auth_mode = "agent_identity"
     elif auth_data.get("auth_mode") == "apikey" or auth_data.get("OPENAI_API_KEY"):
         auth_mode = "apikey"
+    elif auth_data.get("auth_mode") == "apikey" or auth_data.get("OPENAI_API_KEY"):
+        auth_mode = "apikey"
 
     meta = AccountMeta(
         id=account_id,
