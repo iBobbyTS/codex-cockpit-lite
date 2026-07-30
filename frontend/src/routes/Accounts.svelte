@@ -11,6 +11,7 @@
   let importing = $state(false);
   let deleteTarget = $state(null);
   let duplicate = $state(null);
+  let refreshing = $state([]);
   let pendingImport = $state(null);
   let unsupportedModal = $state(false);
   let importJson = $state('');
@@ -42,7 +43,8 @@
         auth_json: importJson.trim() || '{}',
         name: importName.trim() || 'Codex Account',
       });
-      api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
+      refreshing = [...refreshing, result.id];
+      api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {}).finally(() => { refreshing = refreshing.filter(x => x !== result.id); });
       await refreshAll();
     } catch (e) {
       const msg = String(e);
@@ -71,7 +73,8 @@
         });
       }
       // Refresh quota for the overwritten account
-      api('POST', '/api/accounts/' + duplicate + '/refresh').catch(() => {});
+      refreshing = [...refreshing, duplicate];
+      api('POST', '/api/accounts/' + duplicate + '/refresh').catch(() => {}).finally(() => { refreshing = refreshing.filter(x => x !== duplicate); });
       duplicate = null;
       pendingImport = null;
       await refreshAll();
@@ -87,7 +90,8 @@
     importing = true;
     try {
       const result = await api('POST', '/api/accounts/import-from-codex');
-      api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
+      refreshing = [...refreshing, result.id];
+      api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {}).finally(() => { refreshing = refreshing.filter(x => x !== result.id); });
       await refreshAll();
     } catch (e) {
       const msg = String(e);
@@ -233,6 +237,9 @@
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
               </div>
+              {#if refreshing.includes(account.id)}
+                <span class="refresh-spin">⟳</span>
+              {/if}
               <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}>{account.quota?.weekly_percent || 0}%</span>
               <span class="quota-col">5h</span>
             </div>
@@ -313,6 +320,8 @@
   }
   .quota-pct { font-size: 12px; font-weight: 600; width: 32px; text-align: right; }
   .quota-pct.low { color: var(--warning); }
+  .refresh-spin { font-size: 14px; color: var(--accent); animation: spin 1s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   .quota-col { font-size: 10px; color: var(--text-muted); width: 24px; text-align: right; }
 
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
