@@ -196,38 +196,77 @@ fn import_account(auth_json: String, name: String) -> Result<AccountMeta, String
 
 #[tauri::command]
 fn refresh_account(account_id: String) -> Result<AccountMeta, String> {
-    let python = std::env::var("CODEX_BACKEND_PYTHON")
-        .unwrap_or_else(|_| "python3".into());
-    let backend_dir = std::env::current_dir()
+    let accounts_dir = ensure_config_dir().join("accounts").join(&account_id);
+    let auth_path = accounts_dir.join("auth.json");
+    if !auth_path.exists() {
+        return Err(format!("auth.json not found for {}", account_id));
+    }
+
+    let auth_raw: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&auth_path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+
+    let access_token = auth_raw
+        .get("tokens")
+        .and_then(|t| t.get("access_token"))
+        .and_then(|v| v.as_str())
+        .ok_or("No access_token in auth.json")?;
+
+    let chatgpt_account_id = extract_account_id_from_jwt(access_token);
+
+    // Fetch quota from wham/usage
+    let usage_url = "https://chatgpt.com/backend-api/wham/usage";
+    let resp = ureq::get(usage_url)
+        .set("Authorization", &format!("Bearer {}", access_token))
+        .set("Accept", "application/json")
+        .set("ChatGPT-Account-Id", &chatgpt_account_id.unwrap_or_default())
+        .call()
+        .map_err(|e| format!("配额请求失败: {}", e))?;
+
+    let body: serde_json::Value =
+        serde_json::from_reader(resp.into_reader()).map_err(|e| format!("解析配额响应失败: {}", e))?;
+
+    let rate_limit = body.get("rate_limit").and_then(|v| v.as_object());
+    let weekly = rate_limit
+        .and_then(|r| r.get("secondary_window"))
+        .and_then(|v| v.as_object());
+    let hourly = rate_limit
+        .and_then(|r| r.get("primary_window"))
+        .and_then(|v| v.as_object());
+
+    let weekly_pct = weekly
+        .and_then(|w| w.get("used_percent"))
+        .and_then(|v| v.as_i64())
+        .map(|u| 100 - u)
+        .unwrap_or(0);
+    let hourly_pct = hourly
+        .and_then(|w| w.get("used_percent"))
+        .and_then(|v| v.as_i64())
+        .map(|u| 100 - u)
+        .unwrap_or(0);
+
+    // Update meta.json
+    let meta_path = accounts_dir.join("meta.json");
+    let mut meta: AccountMeta = if meta_path.exists() {
+        serde_json::from_str(&fs::read_to_string(&meta_path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?
+    } else {
+        return Err("meta.json not found".into());
+    };
+
+    meta.quota.weekly_percent = weekly_pct as u32;
+    meta.quota.hourly_percent = hourly_pct as u32;
+    meta.quota.queried_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .parent()
-        .map(|p| p.join("backend"))
-        .unwrap_or_default();
-    let config_dir = get_config_dir();
+        .as_secs() as i64;
 
-    let output = Command::new(&python)
-        .arg(backend_dir.join("quota_cli.py"))
-        .arg(&account_id)
-        .arg(config_dir.to_string_lossy().to_string())
-        .output()
-        .map_err(|e| format!("配额刷新失败: {}", e))?;
+    let meta_json = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    let tmp = meta_path.with_extension("tmp");
+    fs::write(&tmp, &meta_json).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, &meta_path).map_err(|e| e.to_string())?;
 
-    if !output.status.success() {
-        return Err(format!("配额刷新进程异常: {}", String::from_utf8_lossy(&output.stderr)));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let result: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("解析配额结果失败: {}: {}", e, stdout))?;
-
-    if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return Err(result.get("error").and_then(|v| v.as_str()).unwrap_or("未知错误").into());
-    }
-
-    // Read updated meta
-    let meta_path = ensure_config_dir().join("accounts").join(&account_id).join("meta.json");
-    let content = fs::read_to_string(&meta_path).map_err(|e| format!("读取meta失败: {}", e))?;
-    serde_json::from_str(&content).map_err(|e| e.to_string())
+    Ok(meta)
 }
 
 #[tauri::command]
@@ -399,6 +438,15 @@ fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
         .ok()?;
     let payload: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
     Some(payload)
+}
+
+fn extract_account_id_from_jwt(access_token: &str) -> Option<String> {
+    let payload = decode_jwt_payload(access_token)?;
+    payload
+        .get("https://api.openai.com/auth")
+        .and_then(|v| v.get("account_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 pub fn main() {
