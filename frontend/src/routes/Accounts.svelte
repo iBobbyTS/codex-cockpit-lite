@@ -45,12 +45,10 @@
         name: importName.trim() || 'Codex Account',
       });
       refreshing.push(result.id); refreshing = refreshing;
-      api('POST', '/api/accounts/' + result.id + '/refresh').then(() => {
-        refreshing.splice(refreshing.indexOf(result.id), 1); refreshing = refreshing;
-      }).catch(() => {
-        refreshing.splice(refreshing.indexOf(result.id), 1); refreshing = refreshing;
-      });
+      const refreshDone = api('POST', '/api/accounts/' + result.id + '/refresh');
       await refreshAll();
+      await refreshDone.catch(() => {});
+      refreshing.splice(refreshing.indexOf(result.id), 1); refreshing = refreshing;
     } catch (e) {
       const msg = String(e);
       if (msg.includes('只支持 ChatGPT')) { unsupportedModal = true; }
@@ -79,14 +77,12 @@
       }
       // Refresh quota for the overwritten account
       refreshing.push(duplicate); refreshing = refreshing;
-      api('POST', '/api/accounts/' + duplicate + '/refresh').then(() => {
-        refreshing.splice(refreshing.indexOf(duplicate), 1); refreshing = refreshing;
-      }).catch(() => {
-        refreshing.splice(refreshing.indexOf(duplicate), 1); refreshing = refreshing;
-      });
+      const refreshDone = api('POST', '/api/accounts/' + duplicate + '/refresh');
+      await refreshAll();
+      await refreshDone.catch(() => {});
+      refreshing.splice(refreshing.indexOf(duplicate), 1); refreshing = refreshing;
       duplicate = null;
       pendingImport = null;
-      await refreshAll();
     } catch (e) {
       errorMsg = '覆盖导入失败: ' + String(e);
     } finally {
@@ -100,12 +96,10 @@
     try {
       const result = await api('POST', '/api/accounts/import-from-codex');
       refreshing.push(result.id); refreshing = refreshing;
-      api('POST', '/api/accounts/' + result.id + '/refresh').then(() => {
-        refreshing.splice(refreshing.indexOf(result.id), 1); refreshing = refreshing;
-      }).catch(() => {
-        refreshing.splice(refreshing.indexOf(result.id), 1); refreshing = refreshing;
-      });
+      const refreshDone = api('POST', '/api/accounts/' + result.id + '/refresh');
       await refreshAll();
+      await refreshDone.catch(() => {});
+      refreshing.splice(refreshing.indexOf(result.id), 1); refreshing = refreshing;
     } catch (e) {
       const msg = String(e);
       if (msg.includes('只支持 ChatGPT')) { unsupportedModal = true; }
