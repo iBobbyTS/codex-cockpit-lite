@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicepkg/vscode-tauri/main/schemas/tauri.conf.schema.json",
   "productName": "Codex Cockpit Lite",
   "version": "0.1.0",
-  "identifier": "com.codex-cockpit-lite.app",
+  "identifier": "com.codex-cockpit-lite",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
