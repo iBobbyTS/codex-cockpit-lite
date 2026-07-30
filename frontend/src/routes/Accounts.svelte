@@ -61,11 +61,15 @@
     if (!pendingImport) return;
     importing = true;
     try {
-      await api('POST', '/api/accounts/import', {
-        auth_json: pendingImport.json,
-        name: pendingImport.name,
-        force: true,
-      });
+      if (pendingImport.fromCodex) {
+        await api('POST', '/api/accounts/import-from-codex', { force: true });
+      } else {
+        await api('POST', '/api/accounts/import', {
+          auth_json: pendingImport.json,
+          name: pendingImport.name,
+          force: true,
+        });
+      }
       duplicate = null;
       pendingImport = null;
       await refreshAll();
@@ -86,6 +90,7 @@
     } catch (e) {
       const msg = String(e);
       if (msg.includes('只支持 ChatGPT')) { unsupportedModal = true; }
+      else if (msg.includes('DUPLICATE:')) { duplicate = msg.split('DUPLICATE:')[1].trim(); pendingImport = { fromCodex: true }; }
       else { errorMsg = '从 ~/.codex 导入失败: ' + msg; }
     } finally {
       importing = false;

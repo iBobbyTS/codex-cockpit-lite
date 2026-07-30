@@ -164,7 +164,9 @@ async def import_account(req: Request):
 
 
 @router.post("/accounts/import-from-codex")
-async def import_from_codex():
+async def import_from_codex(req: Request):
+    body = await req.json() if req.headers.get("content-type", "").startswith("application/json") else {}
+    force = body.get("force", False)
     home = Path.home()
     auth_path = home / ".codex" / "auth.json"
     if not auth_path.exists():
@@ -193,10 +195,9 @@ async def import_from_codex():
 
     chatgpt_account_id = _extract_account_id(auth_data)
     existing = _dedup_account(email, chatgpt_account_id or "")
-    if existing:
-        account_id = existing.id
-    else:
-        account_id = str(uuid.uuid4())
+    if existing and not force:
+        raise HTTPException(409, f"DUPLICATE: {existing.id}")
+    account_id = str(uuid.uuid4())
 
     ad = account_dir(account_id, _cd())
     ad.mkdir(parents=True, exist_ok=True)
