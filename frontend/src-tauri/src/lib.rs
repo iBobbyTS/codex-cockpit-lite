@@ -21,22 +21,35 @@ fn find_backend_main() -> Option<PathBuf> {
 fn api_call(method: String, path: String, body: Option<String>) -> Result<String, String> {
     let port = *BACKEND_PORT.lock().unwrap();
     let url = format!("http://127.0.0.1:{}{}", port, path);
-    let resp = match method.as_str() {
-        "GET" => ureq::get(&url).call(),
-        "POST" => {
-            let r = ureq::post(&url);
-            if let Some(b) = &body { r.set("Content-Type", "application/json").send_string(b) }
-            else { r.call() }
+
+    // Retry up to 10 times with 500ms delay (backend may still be starting)
+    for _ in 0..10 {
+        let result = match method.as_str() {
+            "GET" => ureq::get(&url).call(),
+            "POST" => {
+                let r = ureq::post(&url);
+                if let Some(b) = &body { r.set("Content-Type", "application/json").send_string(b) }
+                else { r.call() }
+            }
+            "PUT" => {
+                let r = ureq::put(&url);
+                if let Some(b) = &body { r.set("Content-Type", "application/json").send_string(b) }
+                else { r.call() }
+            }
+            "DELETE" => ureq::delete(&url).call(),
+            _ => return Err(format!("Unsupported: {}", method)),
+        };
+
+        match result {
+            Ok(resp) => return resp.into_string().map_err(|e| format!("Read error: {}", e)),
+            Err(ureq::Error::Transport(_)) => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                continue;
+            }
+            Err(e) => return Err(format!("API error: {}", e)),
         }
-        "PUT" => {
-            let r = ureq::put(&url);
-            if let Some(b) = &body { r.set("Content-Type", "application/json").send_string(b) }
-            else { r.call() }
-        }
-        "DELETE" => ureq::delete(&url).call(),
-        _ => return Err(format!("Unsupported: {}", method)),
-    }.map_err(|e| format!("API error: {}", e))?;
-    resp.into_string().map_err(|e| format!("Read error: {}", e))
+    }
+    Err(format!("API error: backend not reachable after retries"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -54,22 +67,24 @@ pub fn run() {
                 .spawn()
                 .expect("Failed to spawn Python backend");
 
-            // Read PORT=<number> from stdout asynchronously
-            tauri::async_runtime::spawn(async move {
-                while let Some(event) = rx.recv().await {
-                    if let CommandEvent::Stdout(line) = event {
-                        let text = String::from_utf8_lossy(&line);
-                        if let Some(port_str) = text.strip_prefix("PORT=") {
-                            if let Ok(port) = port_str.trim().parse::<u16>() {
-                                *BACKEND_PORT.lock().unwrap() = port;
-                                break;
-                            }
-                        }
+    // Read PORT=<number> from stdout asynchronously
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if let CommandEvent::Stdout(line) = event {
+                let text = String::from_utf8_lossy(&line);
+                if let Some(port_str) = text.strip_prefix("PORT=") {
+                    if let Ok(port) = port_str.trim().parse::<u16>() {
+                        *BACKEND_PORT.lock().unwrap() = port;
+                        break;
                     }
                 }
-            });
+            }
+        }
+    });
 
-            Ok(())
+    // Give Python time to bind before frontend loads
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
