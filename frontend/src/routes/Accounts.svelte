@@ -124,11 +124,14 @@
   {/if}
 
   {#if deleteTarget}
-    <div class="card confirm-overlay">
-      <p>确认删除此账号？此操作不可撤销。</p>
-      <div class="confirm-actions">
-        <button class="danger" onclick={confirmDelete}>确认删除</button>
-        <button onclick={() => deleteTarget = null}>取消</button>
+    <div class="modal-backdrop" onclick={() => deleteTarget = null}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <h3>确认删除</h3>
+        <p>此操作不可撤销，该账号的所有凭据将被移除。</p>
+        <div class="modal-actions">
+          <button class="danger" onclick={confirmDelete}>删除</button>
+          <button onclick={() => deleteTarget = null}>取消</button>
+        </div>
       </div>
     </div>
   {/if}
@@ -244,13 +247,24 @@
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
   .empty { color: var(--text-muted); text-align: center; padding: 40px; }
 
-  .confirm-overlay {
-    margin-bottom: 16px;
-    border-color: var(--danger);
-    text-align: center;
+  .modal-backdrop {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100;
   }
-  .confirm-overlay p { font-size: 14px; margin-bottom: 12px; }
-  .confirm-actions { display: flex; justify-content: center; gap: 10px; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    min-width: 340px;
+    max-width: 400px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+  }
+  .modal h3 { font-size: 16px; margin-bottom: 8px; }
+  .modal p { font-size: 13px; color: var(--text-muted); margin-bottom: 20px; line-height: 1.5; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
 
   .error-banner {
     background: rgba(239, 68, 68, 0.12);
