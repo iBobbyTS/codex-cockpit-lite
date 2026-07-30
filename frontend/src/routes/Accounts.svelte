@@ -55,7 +55,6 @@
   }
 
   async function deleteAccount(id) {
-    if (!confirm('确认删除此账号？')) return;
     errorMsg = '';
     console.log('[frontend] deleteAccount:', id);
     try {
