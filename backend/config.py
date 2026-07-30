@@ -12,7 +12,7 @@ from models import AppConfig, ApiConfig, AccountMeta, AuthMode
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_DIR = Path.home() / ".codex-cockpit"
+DEFAULT_CONFIG_DIR = Path.home() / ".config" / "codex-cockpit"
 ENV_CONFIG_DIR = "CODEX_COCKPIT_HOME"
 
 

@@ -2,13 +2,20 @@
   import { invoke } from '@tauri-apps/api/core';
 
   let config = $state(null);
+  let accounts = $state([]);
   let status = $state(null);
   let backendRunning = $state(false);
   let portMismatch = $state(false);
   let reportedPort = $state(0);
+  let noAccountsError = $state(false);
+  let hasTriedAutoStart = $state(false);
 
   async function loadConfig() {
     config = await invoke('get_config');
+  }
+
+  async function loadAccounts() {
+    accounts = await invoke('list_accounts');
   }
 
   async function loadStatus() {
@@ -18,11 +25,9 @@
       if (resp.ok) {
         status = await resp.json();
         backendRunning = status?.running || false;
-        // Check port mismatch: auto-update config, show notification
         if (status?.actual_port && status.actual_port !== config?.api?.port) {
           reportedPort = status.actual_port;
           portMismatch = true;
-          // Auto-save the actual port
           if (config) {
             config.api.port = status.actual_port;
             await invoke('save_config', { config });
@@ -38,10 +43,21 @@
   }
 
   async function start() {
-    await invoke('start_backend');
-    await new Promise(r => setTimeout(r, 2000));
-    await loadConfig(); // Re-read config in case backend updated it
-    await loadStatus();
+    if (!accounts.length) {
+      noAccountsError = true;
+      return;
+    }
+    noAccountsError = false;
+    try {
+      await invoke('start_backend');
+      await new Promise(r => setTimeout(r, 2000));
+      await loadConfig();
+      await loadStatus();
+    } catch (e) {
+      if (String(e).includes('NO_ACCOUNTS')) {
+        noAccountsError = true;
+      }
+    }
   }
 
   async function stop() {
@@ -56,7 +72,7 @@
     await invoke('save_config', { config });
   }
 
-  $effect(() => { loadConfig(); });
+  $effect(() => { loadConfig(); loadAccounts(); });
   $effect(() => {
     if (config) {
       loadStatus();
@@ -64,10 +80,30 @@
       return () => clearInterval(interval);
     }
   });
+  // Auto-start backend when accounts exist and not already running
+  $effect(() => {
+    if (accounts.length > 0 && !backendRunning && !hasTriedAutoStart && config) {
+      hasTriedAutoStart = true;
+      start();
+    }
+  });
 </script>
 
 <div class="page">
   <h1>API 服务</h1>
+
+  {#if noAccountsError}
+    <div class="card mismatch-banner" style="background: rgba(239,68,68,0.12); border-color: var(--danger);">
+      <div class="mismatch-content">
+        <span class="mismatch-icon">⚠️</span>
+        <div>
+          <strong>无法启动服务</strong>
+          <p>当前没有已导入账号，请先在「账号管理」中导入账号。</p>
+        </div>
+      </div>
+      <button class="mismatch-close" onclick={() => noAccountsError = false}>✕</button>
+    </div>
+  {/if}
 
   {#if portMismatch}
     <div class="card mismatch-banner">

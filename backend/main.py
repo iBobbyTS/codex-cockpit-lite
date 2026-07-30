@@ -141,7 +141,7 @@ def main():
     parser.add_argument(
         "--config-dir",
         default=None,
-        help="Configuration directory (default: ~/.codex-cockpit)",
+        help="Configuration directory (default: ~/.config/codex-cockpit)",
     )
     parser.add_argument(
         "--port", type=int, default=None, help="Override API port from config",

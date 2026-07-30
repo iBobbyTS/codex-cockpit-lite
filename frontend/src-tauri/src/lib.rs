@@ -91,7 +91,8 @@ fn get_config_dir() -> PathBuf {
         .unwrap_or_else(|_| {
             dirs_next::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join(".codex-cockpit")
+                .join(".config")
+                .join("codex-cockpit")
         })
 }
 
@@ -239,11 +240,40 @@ fn reorder_accounts(account_ids: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn list_accounts() -> Result<Vec<AccountMeta>, String> {
+    let accounts_dir = ensure_config_dir().join("accounts");
+    if !accounts_dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut metas = Vec::new();
+    if let Ok(entries) = fs::read_dir(&accounts_dir) {
+        for entry in entries.flatten() {
+            let meta_path = entry.path().join("meta.json");
+            if meta_path.exists() {
+                if let Ok(content) = fs::read_to_string(&meta_path) {
+                    if let Ok(meta) = serde_json::from_str::<AccountMeta>(&content) {
+                        metas.push(meta);
+                    }
+                }
+            }
+        }
+    }
+    metas.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(metas)
+}
+
+#[tauri::command]
 fn start_backend(state: State<BackendProcess>) -> Result<(), String> {
     let mut proc = state.0.lock().map_err(|e| e.to_string())?;
     if proc.is_some() {
         return Ok(()); // Already running
     }
+
+    let config = get_config()?;
+    if config.api.selected_accounts.is_empty() {
+        return Err("NO_ACCOUNTS".into());
+    }
+
     let python = std::env::var("CODEX_BACKEND_PYTHON")
         .unwrap_or_else(|_| "python3".into());
     let backend_dir = std::env::current_dir()
@@ -253,7 +283,6 @@ fn start_backend(state: State<BackendProcess>) -> Result<(), String> {
         .unwrap_or_default();
 
     let config_dir = get_config_dir();
-    let config = get_config()?;
     let port = config.api.port.to_string();
 
     let child = Command::new(&python)
@@ -341,6 +370,7 @@ pub fn main() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
+            list_accounts,
             import_account,
             import_from_official_codex,
             delete_account,

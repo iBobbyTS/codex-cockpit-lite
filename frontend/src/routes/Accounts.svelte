@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
 
   let config = $state(null);
+  let accounts = $state([]);
   let status = $state(null);
   let showImport = $state(false);
   let importJson = $state('');
@@ -12,9 +13,13 @@
     config = await invoke('get_config');
   }
 
+  async function loadAccounts() {
+    accounts = await invoke('list_accounts');
+  }
+
   async function loadStatus() {
     try {
-      const base = config?.api?.port || 1456;
+      const base = config?.api?.port || 8844;
       const resp = await fetch(`http://localhost:${base}/v1/cockpit/status`);
       if (resp.ok) status = await resp.json();
     } catch (e) {
@@ -33,6 +38,7 @@
       importJson = '';
       importName = '';
       await loadConfig();
+      await loadAccounts();
     } catch (e) {
       importError = String(e);
     }
@@ -42,6 +48,7 @@
     try {
       await invoke('import_from_official_codex');
       await loadConfig();
+      await loadAccounts();
     } catch (e) {
       importError = String(e);
     }
@@ -51,27 +58,24 @@
     if (!confirm('确认删除此账号？')) return;
     await invoke('delete_account', { accountId: id });
     await loadConfig();
+    await loadAccounts();
   }
 
   async function toggleAccount(id, enabled) {
     await invoke('toggle_account', { accountId: id, enabled });
     await loadConfig();
+    await loadAccounts();
   }
 
   function selectedIds() {
     return new Set(config?.api?.selected_accounts || []);
   }
 
-  function accountStatus(id) {
-    if (!status?.accounts) return null;
-    return status.accounts.find(a => a.id === id);
-  }
-
-  $effect(() => { loadConfig(); });
+  $effect(() => { loadConfig(); loadAccounts(); });
   $effect(() => {
     if (config) {
       loadStatus();
-      const interval = setInterval(loadStatus, 3000);
+      const interval = setInterval(loadStatus, 5000);
       return () => clearInterval(interval);
     }
   });
@@ -105,7 +109,7 @@
   {/if}
 
   <div class="account-list">
-    {#each status?.accounts || [] as account (account.id)}
+    {#each accounts as account (account.id)}
       {@const sel = selectedIds().has(account.id)}
       <div class="card account-card">
         <div class="account-main">
