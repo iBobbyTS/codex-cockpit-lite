@@ -5,12 +5,9 @@
     const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
     return JSON.parse(text);
   }
-  import { listen } from '@tauri-apps/api/event';
-
   let config = $state(null);
   let accounts = $state([]);
   let status = $state(null);
-  let ready = $state(false);
   let backendRunning = $state(false);
   let portMismatch = $state(false);
   let reportedPort = $state(0);
@@ -53,15 +50,9 @@
     await api('PUT', '/api/config', config);
   }
 
+  $effect(() => { loadConfig(); loadAccounts(); });
   $effect(() => {
-    const unlisten = listen('backend-ready', () => { ready = true; });
-    return () => { unlisten.then(fn => fn()); };
-  });
-  $effect(() => {
-    if (ready) { loadConfig(); loadAccounts(); }
-  });
-  $effect(() => {
-    if (ready && config) {
+    if (config) {
       loadStatus();
       const interval = setInterval(loadStatus, 3000);
       return () => clearInterval(interval);

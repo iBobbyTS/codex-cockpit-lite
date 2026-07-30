@@ -1,9 +1,9 @@
+use std::io::BufRead;
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use tauri::Emitter;
-use tauri_plugin_shell::process::CommandEvent;
-use tauri_plugin_shell::ShellExt;
 
+static BACKEND: Mutex<Option<Child>> = Mutex::new(None);
 static BACKEND_PORT: Mutex<u16> = Mutex::new(8844);
 
 fn find_backend_main() -> Option<PathBuf> {
@@ -16,6 +16,36 @@ fn find_backend_main() -> Option<PathBuf> {
         if candidate.exists() { return Some(candidate); }
     }
     None
+}
+
+fn start_and_wait() {
+    let python = std::env::var("CODEX_BACKEND_PYTHON").unwrap_or_else(|_| "python3".into());
+    let main_py = match find_backend_main() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let mut child = Command::new(&python)
+        .arg(&main_py)
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok();
+
+    if let Some(ref mut c) = child {
+        if let Some(stdout) = c.stdout.take() {
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines().flatten() {
+                if let Some(port_str) = line.strip_prefix("PORT=") {
+                    if let Ok(port) = port_str.trim().parse::<u16>() {
+                        *BACKEND_PORT.lock().unwrap() = port;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    *BACKEND.lock().unwrap() = child;
 }
 
 #[tauri::command]
@@ -42,36 +72,20 @@ fn api_call(method: String, path: String, body: Option<String>) -> Result<String
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    start_and_wait();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![api_call])
-        .setup(|app| {
-            let main_py = find_backend_main().expect("Cannot find backend main.py");
-            let shell = app.shell();
-            let handle = app.handle().clone();
-
-            let (mut rx, _child) = shell
-                .command("python3")
-                .args([main_py.to_string_lossy().to_string()])
-                .spawn()
-                .expect("Failed to spawn Python backend");
-
-            tauri::async_runtime::spawn(async move {
-                while let Some(event) = rx.recv().await {
-                    if let CommandEvent::Stdout(line) = event {
-                        let text = String::from_utf8_lossy(&line);
-                        if let Some(port_str) = text.strip_prefix("PORT=") {
-                            if let Ok(port) = port_str.trim().parse::<u16>() {
-                                *BACKEND_PORT.lock().unwrap() = port;
-                                let _ = handle.emit("backend-ready", port);
-                                break;
-                            }
-                        }
+        .on_window_event(|_window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Ok(mut proc) = BACKEND.lock() {
+                    if let Some(mut child) = proc.take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
                     }
                 }
-            });
-
-            Ok(())
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

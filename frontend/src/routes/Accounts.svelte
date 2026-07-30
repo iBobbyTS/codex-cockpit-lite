@@ -5,11 +5,8 @@
     const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
     return JSON.parse(text);
   }
-  import { listen } from '@tauri-apps/api/event';
-
   let config = $state(null);
   let accounts = $state([]);
-  let ready = $state(false);
   let showImport = $state(false);
   let importJson = $state('');
   let importName = $state('');
@@ -84,18 +81,10 @@
     return new Set(config?.api?.selected_accounts || []);
   }
 
+  $effect(() => { refreshAll(); });
   $effect(() => {
-    const unlisten = listen('backend-ready', () => { ready = true; });
-    return () => { unlisten.then(fn => fn()); };
-  });
-  $effect(() => {
-    if (ready) { refreshAll(); }
-  });
-  $effect(() => {
-    if (ready) {
-      const interval = setInterval(refreshAll, 5000);
-      return () => clearInterval(interval);
-    }
+    const interval = setInterval(refreshAll, 5000);
+    return () => clearInterval(interval);
   });
 </script>
 

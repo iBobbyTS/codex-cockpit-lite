@@ -5,10 +5,7 @@
     const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
     return JSON.parse(text);
   }
-  import { listen } from '@tauri-apps/api/event';
-
   let config = $state(null);
-  let ready = $state(false);
 
   async function loadConfig() {
     try {
@@ -21,13 +18,7 @@
     await api('PUT', '/api/config', config);
   }
 
-  $effect(() => {
-    const unlisten = listen('backend-ready', () => { ready = true; });
-    return () => { unlisten.then(fn => fn()); };
-  });
-  $effect(() => {
-    if (ready) { loadConfig(); }
-  });
+  $effect(() => { loadConfig(); });
 </script>
 
 <div class="page">
