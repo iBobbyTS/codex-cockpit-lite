@@ -84,7 +84,7 @@ fn start_and_wait() {
         }
     };
 
-    // Read PORT= from stdout
+    // Read PORT= from stdout, discard remaining output in background
     if let Some(stdout) = child.stdout.take() {
         let reader = std::io::BufReader::new(stdout);
         for line in reader.lines().flatten() {
@@ -99,12 +99,14 @@ fn start_and_wait() {
         }
     }
 
-    // Log python stderr
+    // Drain stderr in background (never blocks start_and_wait)
     if let Some(stderr) = child.stderr.take() {
-        let reader = std::io::BufReader::new(stderr);
-        for line in reader.lines().flatten() {
-            log(&format!("[cockpit] [stderr] {}", line));
-        }
+        std::thread::spawn(move || {
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines().flatten() {
+                log(&format!("[cockpit] [stderr] {}", line));
+            }
+        });
     }
 
     *BACKEND.lock().unwrap() = Some(child);
