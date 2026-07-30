@@ -145,15 +145,17 @@
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.hourly_percent || 0}%"></div>
               </div>
-              <span class="quota-label" class:low={account.quota?.hourly_percent < 20}>{account.quota?.hourly_percent || 0}%</span>
               <span class="quota-window">5h</span>
             </div>
             <div class="quota-row">
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
               </div>
-              <span class="quota-label" class:low={account.quota?.weekly_percent < 20}>{account.quota?.weekly_percent || 0}%</span>
               <span class="quota-window">7d</span>
+            </div>
+            <div class="quota-pcts">
+              <span class="quota-pct" class:low={account.quota?.hourly_percent < 20}>{account.quota?.hourly_percent || 0}%</span>
+              <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}>{account.quota?.weekly_percent || 0}%</span>
             </div>
           </div>
         </div>
@@ -209,10 +211,10 @@
   .team { font-size: 12px; color: var(--text-muted); }
   .auth-badge { font-size: 11px; color: var(--accent); text-transform: uppercase; }
 
-  .account-quota { display: flex; flex-direction: column; gap: 4px; min-width: 130px; }
+  .account-quota { display: flex; flex-direction: column; gap: 2px; }
   .quota-row { display: flex; align-items: center; gap: 6px; }
   .quota-bar {
-    width: 80px;
+    width: 100px;
     height: 5px;
     background: var(--border);
     border-radius: 2.5px;
@@ -224,9 +226,10 @@
     border-radius: 2.5px;
     transition: width 0.3s;
   }
-  .quota-label { font-size: 13px; font-weight: 600; min-width: 28px; text-align: right; }
-  .quota-label.low { color: var(--warning); }
   .quota-window { font-size: 10px; color: var(--text-muted); min-width: 14px; }
+  .quota-pcts { display: flex; gap: 8px; padding-left: 4px; }
+  .quota-pct { font-size: 12px; font-weight: 600; min-width: 28px; }
+  .quota-pct.low { color: var(--warning); }
 
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
   .empty { color: var(--text-muted); text-align: center; padding: 40px; }
