@@ -39,20 +39,8 @@ def _cd() -> Path:
 
 
 def _extract_account_id(auth_data: dict) -> str:
-    """Extract chatgpt_account_id from JWT access_token claims."""
-    tokens = auth_data.get("tokens", {})
-    access_token = tokens.get("access_token", "")
-    if not access_token:
-        return ""
-    try:
-        import jwt
-        payload = jwt.decode(access_token, options={"verify_signature": False})
-        auth = payload.get("https://api.openai.com/auth", {})
-        if isinstance(auth, dict):
-            return auth.get("account_id", "") or ""
-    except Exception:
-        pass
-    return ""
+    """Extract account_id from tokens.account_id in auth.json."""
+    return (auth_data.get("tokens") or {}).get("account_id", "") or ""
 
 
 def _find_account_by_email(email: str):
