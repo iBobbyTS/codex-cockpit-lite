@@ -34,10 +34,10 @@ app.include_router(status_router)
 app.include_router(api_router)
 
 # Serve Svelte frontend static files
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend"
-if not _FRONTEND_DIST.exists():
-    _FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-if _FRONTEND_DIST.exists():
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if not (_FRONTEND_DIST / "index.html").exists():
+    _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend"
+if (_FRONTEND_DIST / "index.html").exists():
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
 
     @app.get("/{full_path:path}")
@@ -190,18 +190,20 @@ def main():
     host = args.host or cfg.api.bind_host
 
     # Find an available port, auto-increment if taken
-    actual_port = find_available_port(desired_port, host)
+    actual_port = desired_port if desired_port > 0 else find_available_port(cfg.api.port, host)
+    if desired_port == 0:
+        actual_port = find_available_port(cfg.api.port, host)
+    else:
+        actual_port = find_available_port(desired_port, host)
     set_actual_port(actual_port)
 
-    # Write back to config if port changed
+    # Print port for parent process (Tauri) to read
+    print(f"PORT={actual_port}", flush=True)
+
+    # Write back to config if port changed (for persistence across restarts)
     if actual_port != cfg.api.port:
-        logger.info(
-            "Port %d is occupied, using %d instead", cfg.api.port, actual_port,
-        )
         cfg.api.port = actual_port
         save_config(cfg, _config_dir)
-    else:
-        logger.info("Using configured port %d", actual_port)
 
     logger.info("Starting on %s:%d, config dir: %s", host, actual_port, _config_dir)
     uvicorn.run(app, host=host, port=actual_port, log_level=args.log_level)

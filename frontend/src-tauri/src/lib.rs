@@ -1,8 +1,10 @@
+use std::io::BufRead;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 static BACKEND: Mutex<Option<Child>> = Mutex::new(None);
+static BACKEND_PORT: Mutex<u16> = Mutex::new(8844);
 
 fn find_backend_main() -> Option<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
@@ -16,22 +18,9 @@ fn find_backend_main() -> Option<PathBuf> {
     None
 }
 
-fn backend_port() -> u16 {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let config_path = PathBuf::from(home).join(".config").join("codex-cockpit").join("config.json");
-    if let Ok(content) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(port) = config.get("api").and_then(|a| a.get("port")).and_then(|p| p.as_u64()) {
-                return port as u16;
-            }
-        }
-    }
-    8844
-}
-
 #[tauri::command]
 fn api_call(method: String, path: String, body: Option<String>) -> Result<String, String> {
-    let port = backend_port();
+    let port = *BACKEND_PORT.lock().unwrap();
     let url = format!("http://127.0.0.1:{}{}", port, path);
     let resp = match method.as_str() {
         "GET" => ureq::get(&url).call(),
@@ -39,36 +28,50 @@ fn api_call(method: String, path: String, body: Option<String>) -> Result<String
             let r = ureq::post(&url);
             if let Some(b) = &body {
                 r.set("Content-Type", "application/json").send_string(b)
-            } else {
-                r.call()
-            }
+            } else { r.call() }
         }
         "PUT" => {
             let r = ureq::put(&url);
             if let Some(b) = &body {
                 r.set("Content-Type", "application/json").send_string(b)
-            } else {
-                r.call()
-            }
+            } else { r.call() }
         }
         "DELETE" => ureq::delete(&url).call(),
-        _ => return Err(format!("Unsupported method: {}", method)),
-    }
-    .map_err(|e| format!("API error: {}", e))?;
-
+        _ => return Err(format!("Unsupported: {}", method)),
+    }.map_err(|e| format!("API error: {}", e))?;
     resp.into_string().map_err(|e| format!("Read error: {}", e))
 }
 
 fn start_python_backend() {
-    // Kill any existing backend on the same port
-    let _ = std::process::Command::new("pkill").arg("-f").arg("main.py").output();
-
     let python = std::env::var("CODEX_BACKEND_PYTHON").unwrap_or_else(|_| "python3".into());
     let main_py = match find_backend_main() {
         Some(p) => p,
         None => return,
     };
-    let child = Command::new(&python).arg(&main_py).spawn().ok();
+
+    let mut child = Command::new(&python)
+        .arg(&main_py)
+        .arg("--port")
+        .arg("0")  // Let OS pick
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok();
+
+    if let Some(ref mut c) = child {
+        // Read port from stdout: Python prints "PORT=<number>"
+        if let Some(stdout) = c.stdout.take() {
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines().flatten() {
+                if let Some(port_str) = line.strip_prefix("PORT=") {
+                    if let Ok(port) = port_str.parse::<u16>() {
+                        *BACKEND_PORT.lock().unwrap() = port;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     *BACKEND.lock().unwrap() = child;
 }
 
