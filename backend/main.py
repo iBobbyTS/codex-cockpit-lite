@@ -190,15 +190,8 @@ def main():
     host = args.host or cfg.api.bind_host
 
     # Find an available port, auto-increment if taken
-    actual_port = desired_port if desired_port > 0 else find_available_port(cfg.api.port, host)
-    if desired_port == 0:
-        actual_port = find_available_port(cfg.api.port, host)
-    else:
-        actual_port = find_available_port(desired_port, host)
+    actual_port = find_available_port(desired_port, host)
     set_actual_port(actual_port)
-
-    # Print port for parent process (Tauri) to read
-    print(f"PORT={actual_port}", flush=True)
 
     # Write back to config if port changed (for persistence across restarts)
     if actual_port != cfg.api.port:
