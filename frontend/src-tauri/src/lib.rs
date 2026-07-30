@@ -126,6 +126,7 @@ fn stop_backend() {
 
 #[tauri::command]
 fn api_call(method: String, path: String, body: Option<String>) -> Result<String, String> {
+    log(&format!("[cockpit] api_call {} {}", method, path));
     let port = *BACKEND_PORT.lock().unwrap();
     let url = format!("http://127.0.0.1:{}{}", port, path);
     let resp = match method.as_str() {
@@ -142,8 +143,13 @@ fn api_call(method: String, path: String, body: Option<String>) -> Result<String
         }
         "DELETE" => ureq::delete(&url).call(),
         _ => return Err(format!("Unsupported: {}", method)),
-    }.map_err(|e| format!("API error: {}", e))?;
-    resp.into_string().map_err(|e| format!("Read error: {}", e))
+    };
+    match &resp {
+        Ok(r) => log(&format!("[cockpit] api_call OK {} {} -> {}", method, path, r.status())),
+        Err(e) => log(&format!("[cockpit] api_call ERR {} {} -> {}", method, path, e)),
+    }
+    resp.map(|r| r.into_string().map_err(|e| format!("Read error: {}", e)))
+        .map_err(|e| format!("API error: {}", e))?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

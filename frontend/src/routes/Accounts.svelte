@@ -57,10 +57,13 @@
   async function deleteAccount(id) {
     if (!confirm('确认删除此账号？')) return;
     errorMsg = '';
+    console.log('[frontend] deleteAccount:', id);
     try {
-      await api('DELETE', '/api/accounts/' + id);
+      const result = await api('DELETE', '/api/accounts/' + id);
+      console.log('[frontend] delete result:', result);
       await refreshAll();
     } catch (e) {
+      console.error('[frontend] delete error:', e);
       errorMsg = '删除失败: ' + String(e);
       await refreshAll();
     }

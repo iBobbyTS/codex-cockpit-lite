@@ -22,6 +22,9 @@ from models import (
 from quota import refresh_quota as py_refresh_quota
 from quota import refresh_subscription as py_refresh_subscription
 
+import logging
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api")
 _config_dir: Optional[Path] = None
 
@@ -178,15 +181,19 @@ async def import_from_codex():
 
 @router.delete("/accounts/{account_id}")
 async def delete_account(account_id: str):
+    logger.info(f"DELETE account {account_id}")
     ad = account_dir(account_id, _cd())
     if not ad.exists():
+        logger.warning(f"DELETE account {account_id}: not found at {ad}")
         raise HTTPException(404, f"账号 {account_id} 不存在或已被删除")
 
     shutil.rmtree(ad)
+    logger.info(f"DELETE account {account_id}: directory removed")
 
     cfg = load_config(_cd())
     cfg.api.selected_accounts = [a for a in cfg.api.selected_accounts if a != account_id]
     save_config(cfg, _cd())
+    logger.info(f"DELETE account {account_id}: done")
 
     return {"ok": True}
 
