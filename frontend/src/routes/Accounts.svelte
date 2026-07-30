@@ -141,14 +141,19 @@
             </div>
           </div>
           <div class="account-quota">
-            <div class="quota-bar">
-              <div class="quota-fill" style="width: {account.quota?.hourly_percent || 0}%"></div>
+            <div class="quota-row">
+              <div class="quota-bar">
+                <div class="quota-fill" style="width: {account.quota?.hourly_percent || 0}%"></div>
+              </div>
+              <span class="quota-label" class:low={account.quota?.hourly_percent < 20}>{account.quota?.hourly_percent || 0}%</span>
+              <span class="quota-window">5h</span>
             </div>
-            <div class="quota-text">
-              <span class="quota-label" class:low={account.quota?.hourly_percent < 20}>
-                {account.quota?.hourly_percent || 0}% (5h)
-              </span>
-              <span class="quota-sub">{account.quota?.weekly_percent || 0}% (7d)</span>
+            <div class="quota-row">
+              <div class="quota-bar">
+                <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
+              </div>
+              <span class="quota-label" class:low={account.quota?.weekly_percent < 20}>{account.quota?.weekly_percent || 0}%</span>
+              <span class="quota-window">7d</span>
             </div>
           </div>
         </div>
@@ -204,24 +209,24 @@
   .team { font-size: 12px; color: var(--text-muted); }
   .auth-badge { font-size: 11px; color: var(--accent); text-transform: uppercase; }
 
-  .account-quota { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; min-width: 120px; }
+  .account-quota { display: flex; flex-direction: column; gap: 4px; min-width: 130px; }
+  .quota-row { display: flex; align-items: center; gap: 6px; }
   .quota-bar {
-    width: 100px;
-    height: 6px;
+    width: 80px;
+    height: 5px;
     background: var(--border);
-    border-radius: 3px;
+    border-radius: 2.5px;
     overflow: hidden;
   }
   .quota-fill {
     height: 100%;
     background: var(--success);
-    border-radius: 3px;
+    border-radius: 2.5px;
     transition: width 0.3s;
   }
-  .quota-text { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }
-  .quota-label { font-size: 13px; font-weight: 600; }
+  .quota-label { font-size: 13px; font-weight: 600; min-width: 28px; text-align: right; }
   .quota-label.low { color: var(--warning); }
-  .quota-sub { font-size: 11px; color: var(--text-muted); }
+  .quota-window { font-size: 10px; color: var(--text-muted); min-width: 14px; }
 
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
   .empty { color: var(--text-muted); text-align: center; padding: 40px; }
