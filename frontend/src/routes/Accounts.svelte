@@ -12,6 +12,7 @@
   let deleteTarget = $state(null);
   let duplicate = $state(null);
   let refreshing = $state([]);
+  $effect(() => { console.log('[refreshing]', refreshing.slice()); });
   let pendingImport = $state(null);
   let unsupportedModal = $state(false);
   let importJson = $state('');
@@ -43,11 +44,11 @@
         auth_json: importJson.trim() || '{}',
         name: importName.trim() || 'Codex Account',
       });
-      refreshing.push(result.id);
+      refreshing.push(result.id); refreshing = refreshing;
       api('POST', '/api/accounts/' + result.id + '/refresh').then(() => {
-        const i = refreshing.indexOf(result.id); if (i >= 0) refreshing.splice(i, 1);
+        refreshing.splice(refreshing.indexOf(result.id), 1); refreshing = refreshing;
       }).catch(() => {
-        const i = refreshing.indexOf(result.id); if (i >= 0) refreshing.splice(i, 1);
+        refreshing.splice(refreshing.indexOf(result.id), 1); refreshing = refreshing;
       });
       await refreshAll();
     } catch (e) {
@@ -77,11 +78,11 @@
         });
       }
       // Refresh quota for the overwritten account
-      refreshing.push(duplicate);
+      refreshing.push(duplicate); refreshing = refreshing;
       api('POST', '/api/accounts/' + duplicate + '/refresh').then(() => {
-        const i = refreshing.indexOf(duplicate); if (i >= 0) refreshing.splice(i, 1);
+        refreshing.splice(refreshing.indexOf(duplicate), 1); refreshing = refreshing;
       }).catch(() => {
-        const i = refreshing.indexOf(duplicate); if (i >= 0) refreshing.splice(i, 1);
+        refreshing.splice(refreshing.indexOf(duplicate), 1); refreshing = refreshing;
       });
       duplicate = null;
       pendingImport = null;
@@ -98,11 +99,11 @@
     importing = true;
     try {
       const result = await api('POST', '/api/accounts/import-from-codex');
-      refreshing.push(result.id);
+      refreshing.push(result.id); refreshing = refreshing;
       api('POST', '/api/accounts/' + result.id + '/refresh').then(() => {
-        const i = refreshing.indexOf(result.id); if (i >= 0) refreshing.splice(i, 1);
+        refreshing.splice(refreshing.indexOf(result.id), 1); refreshing = refreshing;
       }).catch(() => {
-        const i = refreshing.indexOf(result.id); if (i >= 0) refreshing.splice(i, 1);
+        refreshing.splice(refreshing.indexOf(result.id), 1); refreshing = refreshing;
       });
       await refreshAll();
     } catch (e) {
