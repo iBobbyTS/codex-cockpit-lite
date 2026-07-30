@@ -37,7 +37,8 @@
     ],
     "externalBin": [],
     "resources": {
-      "../../backend/": "backend/"
+      "../../backend/": "backend/",
+      "../dist/": "frontend/"
     }
   },
   "plugins": {

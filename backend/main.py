@@ -34,7 +34,9 @@ app.include_router(status_router)
 app.include_router(api_router)
 
 # Serve Svelte frontend static files
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend"
+if not _FRONTEND_DIST.exists():
+    _FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 if _FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
 
