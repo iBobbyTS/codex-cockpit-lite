@@ -10,6 +10,7 @@
   let showImport = $state(false);
   let importing = $state(false);
   let deleteTarget = $state(null);
+  let unsupportedModal = $state(false);
   let importJson = $state('');
   let importName = $state('');
   let errorMsg = $state('');
@@ -41,6 +42,7 @@
       });
       api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
       await refreshAll();
+      if (result.auth_mode !== 'oauth') { unsupportedModal = true; }
     } catch (e) {
       errorMsg = '导入失败: ' + String(e);
     } finally {
@@ -55,6 +57,7 @@
       const result = await api('POST', '/api/accounts/import-from-codex');
       api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
       await refreshAll();
+      if (result.auth_mode !== 'oauth') { unsupportedModal = true; }
     } catch (e) {
       errorMsg = '从 ~/.codex 导入失败: ' + String(e);
     } finally {
@@ -147,6 +150,18 @@
     <p class="loading">正在导入...</p>
   {/if}
 
+  {#if unsupportedModal}
+    <div class="modal-backdrop" onclick={() => unsupportedModal = false}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <h3>不支持的认证方式</h3>
+        <p>Codex Cockpit Lite 当前仅支持 ChatGPT (OAuth) 登录方式。API Key 和 Agent Identity 暂不可用。</p>
+        <div class="modal-actions">
+          <button onclick={() => unsupportedModal = false}>我知道了</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <div class="account-list">
     {#each accounts as account (account.id)}
       {@const sel = selectedIds().has(account.id)}
@@ -164,7 +179,6 @@
               {#if account.team_name}
                 <span class="team">{account.team_name}</span>
               {/if}
-              <span class="auth-badge">{account.auth_mode}</span>
             </div>
           </div>
           <div class="account-quota">
@@ -234,7 +248,6 @@
   .email { font-size: 12px; color: var(--text-muted); }
   .tags { display: flex; gap: 6px; margin-top: 4px; align-items: center; flex-wrap: wrap; }
   .team { font-size: 12px; color: var(--text-muted); }
-  .auth-badge { font-size: 11px; color: var(--accent); text-transform: uppercase; }
 
   .account-quota { display: flex; flex-direction: column; gap: 2px; }
   .quota-row { display: flex; align-items: center; gap: 6px; }
