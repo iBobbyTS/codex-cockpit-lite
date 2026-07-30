@@ -110,6 +110,7 @@ fn ensure_config_dir() -> PathBuf {
 
 #[tauri::command]
 fn get_config() -> Result<AppConfig, String> {
+    ensure_config_dir();
     let path = get_config_path();
     if !path.exists() {
         let default = AppConfig {
