@@ -146,14 +146,14 @@
                 <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
               </div>
               <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}>{account.quota?.weekly_percent || 0}%</span>
-              <span class="quota-window">5h</span>
+              <span class="quota-col">5h</span>
             </div>
             <div class="quota-row">
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.hourly_percent || 0}%"></div>
               </div>
               <span class="quota-pct" class:low={account.quota?.hourly_percent < 20}>{account.quota?.hourly_percent || 0}%</span>
-              <span class="quota-window">7d</span>
+              <span class="quota-col">7d</span>
             </div>
           </div>
         </div>
@@ -226,7 +226,7 @@
   }
   .quota-pct { font-size: 12px; font-weight: 600; width: 32px; text-align: right; }
   .quota-pct.low { color: var(--warning); }
-  .quota-window { font-size: 10px; color: var(--text-muted); }
+  .quota-col { font-size: 10px; color: var(--text-muted); width: 24px; text-align: right; }
 
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
   .empty { color: var(--text-muted); text-align: center; padding: 40px; }
