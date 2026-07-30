@@ -44,7 +44,7 @@
       await refreshAll();
     } catch (e) {
       const msg = String(e);
-      if (msg.includes('UNSUPPORTED_AUTH')) { unsupportedModal = true; }
+      if (msg.includes('只支持 ChatGPT')) { unsupportedModal = true; }
       else { errorMsg = '导入失败: ' + msg; }
     } finally {
       importing = false;
@@ -60,7 +60,7 @@
       await refreshAll();
     } catch (e) {
       const msg = String(e);
-      if (msg.includes('UNSUPPORTED_AUTH')) { unsupportedModal = true; }
+      if (msg.includes('只支持 ChatGPT')) { unsupportedModal = true; }
       else { errorMsg = '从 ~/.codex 导入失败: ' + msg; }
     } finally {
       importing = false;

@@ -153,9 +153,19 @@ async fn api_call(method: String, path: String, body: Option<String>) -> Result<
             Ok(r) => log(&format!("[cockpit] api_call OK {} {} -> {}", m, p, r.status())),
             Err(e) => log(&format!("[cockpit] api_call ERR {} {} -> {}", m, p, e)),
         }
-        result.map_err(|e| format!("API error: {}", e))
+        // On error, try to extract detail from response body
+        let resp = result.map_err(|e| {
+            let msg = e.to_string();
+            // ureq includes response body in error for 4xx/5xx
+            if msg.contains("UNSUPPORTED_AUTH") {
+                msg.replace("UNSUPPORTED_AUTH: ", "")
+            } else {
+                format!("请求失败: {}", msg)
+            }
+        })?;
+        resp.into_string().map_err(|e| format!("Read error: {}", e))
     }).await.map_err(|e| format!("Spawn error: {}", e))??;
-    resp.into_string().map_err(|e| format!("Read error: {}", e))
+    Ok(resp)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
