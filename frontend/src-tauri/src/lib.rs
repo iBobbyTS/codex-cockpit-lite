@@ -5,11 +5,22 @@ use std::sync::Mutex;
 static BACKEND: Mutex<Option<Child>> = Mutex::new(None);
 
 fn find_backend_main() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
-    let candidate = cwd.parent()?.join("backend").join("main.py");
-    if candidate.exists() {
-        return Some(candidate);
+    // Try relative to current dir (dev mode)
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidate = cwd.parent()?.join("backend").join("main.py");
+        if candidate.exists() {
+            return Some(candidate);
+        }
     }
+
+    // Try relative to executable (bundled app)
+    if let Ok(exe) = std::env::current_exe() {
+        let candidate = exe.parent()?.parent()?.join("Resources").join("backend").join("main.py");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
     None
 }
 
