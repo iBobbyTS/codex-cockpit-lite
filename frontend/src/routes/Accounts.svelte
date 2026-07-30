@@ -7,14 +7,17 @@
   let showImport = $state(false);
   let importJson = $state('');
   let importName = $state('');
-  let importError = $state('');
+  let errorMsg = $state('');
+  let configVersion = $state(0);
 
-  async function loadConfig() {
-    config = await invoke('get_config');
-  }
-
-  async function loadAccounts() {
-    accounts = await invoke('list_accounts');
+  async function refreshAll() {
+    try {
+      config = await invoke('get_config');
+      accounts = await invoke('list_accounts');
+      configVersion++;
+    } catch (e) {
+      errorMsg = '读取配置失败: ' + String(e);
+    }
   }
 
   async function loadStatus() {
@@ -28,7 +31,7 @@
   }
 
   async function importAccount() {
-    importError = '';
+    errorMsg = '';
     try {
       await invoke('import_account', {
         authJson: importJson.trim(),
@@ -37,43 +40,52 @@
       showImport = false;
       importJson = '';
       importName = '';
-      await loadConfig();
-      await loadAccounts();
+      await refreshAll();
     } catch (e) {
-      importError = String(e);
+      errorMsg = '导入失败: ' + String(e);
     }
   }
 
   async function importOfficial() {
+    errorMsg = '';
     try {
       await invoke('import_from_official_codex');
-      await loadConfig();
-      await loadAccounts();
+      await refreshAll();
     } catch (e) {
-      importError = String(e);
+      errorMsg = '从 ~/.codex 导入失败: ' + String(e);
     }
   }
 
   async function deleteAccount(id) {
     if (!confirm('确认删除此账号？')) return;
-    await invoke('delete_account', { accountId: id });
-    await loadConfig();
-    await loadAccounts();
+    errorMsg = '';
+    try {
+      await invoke('delete_account', { accountId: id });
+      await refreshAll();
+    } catch (e) {
+      errorMsg = '删除失败: ' + String(e);
+      await refreshAll();
+    }
   }
 
   async function toggleAccount(id, enabled) {
-    await invoke('toggle_account', { accountId: id, enabled });
-    await loadConfig();
-    await loadAccounts();
+    errorMsg = '';
+    try {
+      await invoke('toggle_account', { accountId: id, enabled });
+      await refreshAll();
+    } catch (e) {
+      errorMsg = String(e);
+      await refreshAll();
+    }
   }
 
   function selectedIds() {
     return new Set(config?.api?.selected_accounts || []);
   }
 
-  $effect(() => { loadConfig(); loadAccounts(); });
+  $effect(() => { refreshAll(); });
   $effect(() => {
-    if (config) {
+    if (configVersion > 0) {
       loadStatus();
       const interval = setInterval(loadStatus, 5000);
       return () => clearInterval(interval);
@@ -92,6 +104,14 @@
     </div>
   </div>
 
+  {#if errorMsg}
+    <div class="card error-banner">
+      <span>❌</span>
+      <span>{errorMsg}</span>
+      <button class="mismatch-close" onclick={() => errorMsg = ''}>✕</button>
+    </div>
+  {/if}
+
   {#if showImport}
     <div class="card import-panel">
       <textarea
@@ -102,9 +122,6 @@
         <input bind:value={importName} placeholder="显示名称（可选）" />
         <button class="primary" onclick={importAccount}>导入</button>
       </div>
-      {#if importError}
-        <p class="error">{importError}</p>
-      {/if}
     </div>
   {/if}
 
@@ -208,4 +225,24 @@
 
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
   .empty { color: var(--text-muted); text-align: center; padding: 40px; }
+
+  .error-banner {
+    background: rgba(239, 68, 68, 0.12);
+    border-color: var(--danger);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+  }
+  .error-banner .mismatch-close {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+  .error-banner .mismatch-close:hover { color: var(--text); }
 </style>

@@ -211,9 +211,10 @@ fn import_from_official_codex() -> Result<AccountMeta, String> {
 #[tauri::command]
 fn delete_account(account_id: String) -> Result<(), String> {
     let accounts_dir = ensure_config_dir().join("accounts").join(&account_id);
-    if accounts_dir.exists() {
-        fs::remove_dir_all(&accounts_dir).map_err(|e| e.to_string())?;
+    if !accounts_dir.exists() {
+        return Err(format!("账号 {} 不存在或已被删除", account_id));
     }
+    fs::remove_dir_all(&accounts_dir).map_err(|e| format!("删除账号目录失败: {}", e))?;
     let mut config = get_config()?;
     config.api.selected_accounts.retain(|id| id != &account_id);
     save_config(config)
