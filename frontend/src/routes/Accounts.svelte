@@ -10,6 +10,8 @@
   let showImport = $state(false);
   let importing = $state(false);
   let deleteTarget = $state(null);
+  let duplicate = $state(null);
+  let pendingImport = $state(null);
   let unsupportedModal = $state(false);
   let importJson = $state('');
   let importName = $state('');
@@ -45,7 +47,30 @@
     } catch (e) {
       const msg = String(e);
       if (msg.includes('只支持 ChatGPT')) { unsupportedModal = true; }
+      else if (msg.includes('DUPLICATE:')) {
+        duplicate = msg.split('DUPLICATE:')[1].trim();
+        pendingImport = { json: importJson.trim() || '{}', name: importName.trim() || 'Codex Account' };
+      }
       else { errorMsg = '导入失败: ' + msg; }
+    } finally {
+      importing = false;
+    }
+  }
+
+  async function overrideImport() {
+    if (!pendingImport) return;
+    importing = true;
+    try {
+      await api('POST', '/api/accounts/import', {
+        auth_json: pendingImport.json,
+        name: pendingImport.name,
+        force: true,
+      });
+      duplicate = null;
+      pendingImport = null;
+      await refreshAll();
+    } catch (e) {
+      errorMsg = '覆盖导入失败: ' + String(e);
     } finally {
       importing = false;
     }
@@ -150,6 +175,19 @@
 
   {#if importing}
     <p class="loading">正在导入...</p>
+  {/if}
+
+  {#if duplicate}
+    <div class="modal-backdrop" onclick={() => duplicate = null}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <h3>重复账号</h3>
+        <p>该邮箱已存在账号，是否覆盖更新？覆盖将刷新凭据信息。</p>
+        <div class="modal-actions">
+          <button class="danger" onclick={overrideImport}>覆盖</button>
+          <button onclick={() => duplicate = null}>取消</button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if unsupportedModal}

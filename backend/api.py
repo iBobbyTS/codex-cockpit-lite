@@ -135,11 +135,11 @@ async def import_account(req: Request):
     # Extract account_id from JWT for team-aware dedup
     chatgpt_account_id = _extract_account_id(auth_data)
 
+    force = body.get("force", False)
     existing = _dedup_account(email, chatgpt_account_id or "")
-    if existing:
-        account_id = existing.id
-    else:
-        account_id = str(uuid.uuid4())
+    if existing and not force:
+        raise HTTPException(409, f"DUPLICATE: {existing.id}")
+    account_id = existing.id if existing else str(uuid.uuid4())
 
     ad = account_dir(account_id, _cd())
     ad.mkdir(parents=True, exist_ok=True)
