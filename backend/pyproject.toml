@@ -1,0 +1,27 @@
+[project]
+name = "codex-cockpit-lite"
+version = "0.1.0"
+description = "Simplified Codex multi-account manager with API proxy"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "httpx>=0.28",
+    "websockets>=14",
+    "pydantic>=2.10",
+    "watchdog>=6",
+    "aiosqlite>=0.20",
+    "pyjwt>=2.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.25",
+    "pytest-httpx>=0.35",
+    "respx>=0.22",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

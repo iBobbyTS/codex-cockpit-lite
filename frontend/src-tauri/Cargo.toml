@@ -1,0 +1,21 @@
+[package]
+name = "codex-cockpit-lite"
+version = "0.1.0"
+description = "Codex Cockpit Lite - Simplified Codex multi-account manager"
+edition = "2021"
+
+[lib]
+name = "codex_cockpit_lite_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs-next = "2"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"

@@ -1,0 +1,207 @@
+<script>
+  import { invoke } from '@tauri-apps/api/core';
+
+  let config = $state(null);
+  let status = $state(null);
+  let showImport = $state(false);
+  let importJson = $state('');
+  let importName = $state('');
+  let importError = $state('');
+
+  async function loadConfig() {
+    config = await invoke('get_config');
+  }
+
+  async function loadStatus() {
+    try {
+      const base = config?.api?.port || 1456;
+      const resp = await fetch(`http://localhost:${base}/v1/cockpit/status`);
+      if (resp.ok) status = await resp.json();
+    } catch (e) {
+      status = null;
+    }
+  }
+
+  async function importAccount() {
+    importError = '';
+    try {
+      await invoke('import_account', {
+        authJson: importJson.trim(),
+        name: importName.trim() || 'Codex Account',
+      });
+      showImport = false;
+      importJson = '';
+      importName = '';
+      await loadConfig();
+    } catch (e) {
+      importError = String(e);
+    }
+  }
+
+  async function importOfficial() {
+    try {
+      await invoke('import_from_official_codex');
+      await loadConfig();
+    } catch (e) {
+      importError = String(e);
+    }
+  }
+
+  async function deleteAccount(id) {
+    if (!confirm('确认删除此账号？')) return;
+    await invoke('delete_account', { accountId: id });
+    await loadConfig();
+  }
+
+  async function toggleAccount(id, enabled) {
+    await invoke('toggle_account', { accountId: id, enabled });
+    await loadConfig();
+  }
+
+  function selectedIds() {
+    return new Set(config?.api?.selected_accounts || []);
+  }
+
+  function accountStatus(id) {
+    if (!status?.accounts) return null;
+    return status.accounts.find(a => a.id === id);
+  }
+
+  $effect(() => { loadConfig(); });
+  $effect(() => {
+    if (config) {
+      loadStatus();
+      const interval = setInterval(loadStatus, 3000);
+      return () => clearInterval(interval);
+    }
+  });
+</script>
+
+<div class="page">
+  <div class="header">
+    <h1>账号管理</h1>
+    <div class="actions">
+      <button onclick={importOfficial}>从 ~/.codex 导入</button>
+      <button class="primary" onclick={() => showImport = !showImport}>
+        {showImport ? '取消' : '导入 auth.json'}
+      </button>
+    </div>
+  </div>
+
+  {#if showImport}
+    <div class="card import-panel">
+      <textarea
+        bind:value={importJson}
+        placeholder="粘贴 auth.json 内容..."
+      ></textarea>
+      <div class="import-row">
+        <input bind:value={importName} placeholder="显示名称（可选）" />
+        <button class="primary" onclick={importAccount}>导入</button>
+      </div>
+      {#if importError}
+        <p class="error">{importError}</p>
+      {/if}
+    </div>
+  {/if}
+
+  <div class="account-list">
+    {#each status?.accounts || [] as account (account.id)}
+      {@const sel = selectedIds().has(account.id)}
+      <div class="card account-card">
+        <div class="account-main">
+          <div class="account-info">
+            <h3>{account.name || account.email || account.id.slice(0, 8)}</h3>
+            <span class="email">{account.email}</span>
+            <div class="tags">
+              {#if account.plan_type}
+                <span class="badge {account.plan_type === 'pro' ? 'pro' : account.plan_type.includes('team') ? 'team' : 'free'}">
+                  {account.plan_type}
+                </span>
+              {/if}
+              {#if account.team_name}
+                <span class="team">{account.team_name}</span>
+              {/if}
+              <span class="auth-badge">{account.auth_mode}</span>
+            </div>
+          </div>
+          <div class="account-quota">
+            <div class="quota-bar">
+              <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
+            </div>
+            <span class="quota-label" class:low={account.quota?.weekly_percent < 20}>
+              {account.quota?.weekly_percent || 0}%
+            </span>
+          </div>
+        </div>
+        <div class="account-actions">
+          <button
+            class={sel ? 'danger' : 'primary'}
+            onclick={() => toggleAccount(account.id, !sel)}
+          >
+            {sel ? '禁用' : '启用'}
+          </button>
+          <button class="danger" onclick={() => deleteAccount(account.id)}>删除</button>
+        </div>
+      </div>
+    {:else}
+      <p class="empty">还没有导入账号。点击上方按钮导入 auth.json。</p>
+    {/each}
+  </div>
+</div>
+
+<style>
+  .page { max-width: 800px; }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+  .header h1 { font-size: 20px; font-weight: 700; }
+  .actions { display: flex; gap: 8px; }
+
+  .import-panel {
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .import-row { display: flex; gap: 8px; }
+  .import-row input { flex: 1; }
+  .error { color: var(--danger); font-size: 13px; }
+
+  .account-list { display: flex; flex-direction: column; gap: 10px; }
+
+  .account-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+  }
+  .account-main { flex: 1; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+  .account-info h3 { font-size: 15px; margin-bottom: 2px; }
+  .email { font-size: 12px; color: var(--text-muted); }
+  .tags { display: flex; gap: 6px; margin-top: 4px; align-items: center; flex-wrap: wrap; }
+  .team { font-size: 12px; color: var(--text-muted); }
+  .auth-badge { font-size: 11px; color: var(--accent); text-transform: uppercase; }
+
+  .account-quota { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+  .quota-bar {
+    width: 100px;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .quota-fill {
+    height: 100%;
+    background: var(--success);
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+  .quota-label { font-size: 13px; font-weight: 600; min-width: 32px; text-align: right; }
+  .quota-label.low { color: var(--warning); }
+
+  .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .empty { color: var(--text-muted); text-align: center; padding: 40px; }
+</style>

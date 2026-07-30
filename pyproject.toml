@@ -1,0 +1,5 @@
+[project]
+name = "codex-cockpit-lite"
+version = "0.1.0"
+description = "Simplified Codex multi-account manager with API proxy"
+requires-python = ">=3.11"
