@@ -87,8 +87,7 @@ async def import_account(req: Request):
     ad.mkdir(parents=True, exist_ok=True)
 
     # Check auth mode BEFORE writing files
-    am = (auth_data.get("auth_mode") or "").lower()
-    if am in ("apikey", "api", "api_key"):
+    if (auth_data.get("auth_mode") or "").lower() != "chatgpt":
         raise HTTPException(400, "UNSUPPORTED_AUTH: Codex Cockpit Lite 只支持 ChatGPT (OAuth) 登录")
 
     account_id = str(uuid.uuid4())
@@ -150,8 +149,7 @@ async def import_from_codex():
             pass
 
     # Check auth mode BEFORE writing files
-    am = (auth_data.get("auth_mode") or "").lower()
-    if am in ("apikey", "api", "api_key"):
+    if (auth_data.get("auth_mode") or "").lower() != "chatgpt":
         raise HTTPException(400, "UNSUPPORTED_AUTH: Codex Cockpit Lite 只支持 ChatGPT (OAuth) 登录")
 
     name = email.split("@")[0] if email else "Codex Account"
