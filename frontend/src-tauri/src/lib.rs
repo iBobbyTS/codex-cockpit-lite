@@ -125,31 +125,37 @@ fn stop_backend() {
 }
 
 #[tauri::command]
-fn api_call(method: String, path: String, body: Option<String>) -> Result<String, String> {
+async fn api_call(method: String, path: String, body: Option<String>) -> Result<String, String> {
     log(&format!("[cockpit] api_call {} {}", method, path));
-    let port = *BACKEND_PORT.lock().unwrap();
-    let url = format!("http://127.0.0.1:{}{}", port, path);
-    let resp = match method.as_str() {
-        "GET" => ureq::get(&url).call(),
-        "POST" => {
-            let r = ureq::post(&url);
-            if let Some(b) = &body { r.set("Content-Type", "application/json").send_string(b) }
-            else { r.call() }
-        }
-        "PUT" => {
-            let r = ureq::put(&url);
-            if let Some(b) = &body { r.set("Content-Type", "application/json").send_string(b) }
-            else { r.call() }
-        }
-        "DELETE" => ureq::delete(&url).call(),
-        _ => return Err(format!("Unsupported: {}", method)),
+    let url = {
+        let port = *BACKEND_PORT.lock().unwrap();
+        format!("http://127.0.0.1:{}{}", port, path)
     };
-    match &resp {
-        Ok(r) => log(&format!("[cockpit] api_call OK {} {} -> {}", method, path, r.status())),
-        Err(e) => log(&format!("[cockpit] api_call ERR {} {} -> {}", method, path, e)),
-    }
-    resp.map(|r| r.into_string().map_err(|e| format!("Read error: {}", e)))
-        .map_err(|e| format!("API error: {}", e))?
+    let m = method.clone();
+    let p = path.clone();
+    let resp = tauri::async_runtime::spawn_blocking(move || {
+        let result = match m.as_str() {
+            "GET" => ureq::get(&url).call(),
+            "POST" => {
+                let r = ureq::post(&url);
+                if let Some(b) = &body { r.set("Content-Type", "application/json").send_string(b) }
+                else { r.call() }
+            }
+            "PUT" => {
+                let r = ureq::put(&url);
+                if let Some(b) = &body { r.set("Content-Type", "application/json").send_string(b) }
+                else { r.call() }
+            }
+            "DELETE" => ureq::delete(&url).call(),
+            _ => return Err(format!("Unsupported: {}", m)),
+        };
+        match &result {
+            Ok(r) => log(&format!("[cockpit] api_call OK {} {} -> {}", m, p, r.status())),
+            Err(e) => log(&format!("[cockpit] api_call ERR {} {} -> {}", m, p, e)),
+        }
+        result.map_err(|e| format!("API error: {}", e))
+    }).await.map_err(|e| format!("Spawn error: {}", e))??;
+    resp.into_string().map_err(|e| format!("Read error: {}", e))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
