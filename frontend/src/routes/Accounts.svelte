@@ -145,13 +145,13 @@
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.hourly_percent || 0}%"></div>
               </div>
-              <span class="quota-window">5h</span>
+              <span class="quota-window">7d</span>
             </div>
             <div class="quota-row">
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
               </div>
-              <span class="quota-window">7d</span>
+              <span class="quota-window">5h</span>
             </div>
             <div class="quota-pcts">
               <span class="quota-pct" class:low={account.quota?.hourly_percent < 20}>{account.quota?.hourly_percent || 0}%</span>
