@@ -70,6 +70,10 @@
           force: true,
         });
       }
+      // Refresh quota for the overwritten account
+      const accts = await api('GET', '/api/accounts');
+      const updated = accts.find(a => a.email && a.id !== duplicate);
+      if (updated) api('POST', '/api/accounts/' + updated.id + '/refresh').catch(() => {});
       duplicate = null;
       pendingImport = null;
       await refreshAll();
