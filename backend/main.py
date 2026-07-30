@@ -12,10 +12,12 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from config import get_config_dir, ensure_config_dir, load_config, save_config
 from status import router as status_router, set_config_dir, set_actual_port
+from api import router as api_router, set_api_config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,20 @@ app.add_middleware(
 )
 
 app.include_router(status_router)
+app.include_router(api_router)
+
+# Serve Svelte frontend static files
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """Serve Svelte SPA — everything falls back to index.html."""
+        file_path = _FRONTEND_DIST / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(_FRONTEND_DIST / "index.html")
 
 _config_dir: Path = get_config_dir()
 _actual_port: int = 0
@@ -54,6 +70,7 @@ async def startup():
     global _config_dir
     ensure_config_dir(_config_dir)
     set_config_dir(_config_dir)
+    set_api_config_dir(_config_dir)
     logger.info("Codex Cockpit Lite started, config dir: %s", _config_dir)
 
     # Start background quota refresh

@@ -1,0 +1,220 @@
+"""Management API — config, accounts, CRUD. Frontend talks to this, not Tauri."""
+
+from __future__ import annotations
+
+import json
+import uuid
+import shutil
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+from config import (
+    load_config, save_config, ensure_config_dir, get_config_dir,
+    load_meta, save_meta, list_account_metas, list_selected_accounts,
+    load_auth_file, account_dir,
+)
+from models import (
+    AppConfig, AccountMeta, QuotaSnapshot, AuthMode,
+)
+from quota import refresh_quota as py_refresh_quota
+from quota import refresh_subscription as py_refresh_subscription
+
+router = APIRouter(prefix="/api")
+_config_dir: Optional[Path] = None
+
+
+def set_api_config_dir(path: Path) -> None:
+    global _config_dir
+    _config_dir = path
+
+
+def _cd() -> Path:
+    return _config_dir or get_config_dir()
+
+
+# ─── Config ───
+
+@router.get("/config")
+async def get_config():
+    return load_config(_cd()).model_dump()
+
+
+@router.put("/config")
+async def put_config(body: dict):
+    try:
+        cfg = AppConfig(**body)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid config: {e}")
+    save_config(cfg, _cd())
+    return {"ok": True}
+
+
+# ─── Accounts ───
+
+@router.get("/accounts")
+async def get_accounts():
+    metas = list_account_metas(_cd())
+    cfg = load_config(_cd())
+    selected = set(cfg.api.selected_accounts)
+    for m in metas:
+        m.enabled = m.id in selected
+    return [m.model_dump() for m in metas]
+
+
+@router.post("/accounts/import")
+async def import_account(req: Request):
+    body = await req.json()
+    auth_json = body.get("auth_json", "")
+    name = body.get("name", "")
+
+    if not auth_json.strip():
+        raise HTTPException(400, "auth_json is required")
+
+    # Validate JSON
+    try:
+        auth_data = json.loads(auth_json)
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"Invalid auth.json: {e}")
+
+    account_id = str(uuid.uuid4())
+    ad = account_dir(account_id, _cd())
+    ad.mkdir(parents=True, exist_ok=True)
+
+    # Write auth.json (pretty-print)
+    (ad / "auth.json").write_text(json.dumps(auth_data, indent=2))
+
+    # Extract email
+    email = ""
+    if "tokens" in auth_data and "id_token" in auth_data["tokens"]:
+        import jwt
+        try:
+            payload = jwt.decode(auth_data["tokens"]["id_token"], options={"verify_signature": False})
+            email = payload.get("email", "")
+        except Exception:
+            pass
+    if not email and "agent_identity" in auth_data:
+        email = auth_data["agent_identity"].get("email", "")
+
+    if not name:
+        name = email.split("@")[0] if email else "Codex Account"
+
+    # Detect auth mode
+    auth_mode = "oauth"
+    if auth_data.get("agent_identity"):
+        auth_mode = "agent_identity"
+    elif auth_data.get("auth_mode") == "apikey" or auth_data.get("OPENAI_API_KEY"):
+        auth_mode = "apikey"
+
+    meta = AccountMeta(
+        id=account_id,
+        name=name,
+        email=email,
+        auth_mode=AuthMode(auth_mode),
+    )
+    save_meta(meta, _cd())
+
+    # Auto-add to selected accounts
+    cfg = load_config(_cd())
+    if account_id not in cfg.api.selected_accounts:
+        cfg.api.selected_accounts.append(account_id)
+        save_config(cfg, _cd())
+
+    return meta.model_dump()
+
+
+@router.post("/accounts/import-from-codex")
+async def import_from_codex():
+    home = Path.home()
+    auth_path = home / ".codex" / "auth.json"
+    if not auth_path.exists():
+        raise HTTPException(400, "~/.codex/auth.json not found")
+
+    auth_json = auth_path.read_text()
+    try:
+        auth_data = json.loads(auth_json)
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"Invalid auth.json: {e}")
+
+    email = ""
+    if "tokens" in auth_data and "id_token" in auth_data["tokens"]:
+        import jwt
+        try:
+            payload = jwt.decode(auth_data["tokens"]["id_token"], options={"verify_signature": False})
+            email = payload.get("email", "")
+        except Exception:
+            pass
+
+    name = email.split("@")[0] if email else "Codex Account"
+
+    account_id = str(uuid.uuid4())
+    ad = account_dir(account_id, _cd())
+    ad.mkdir(parents=True, exist_ok=True)
+    (ad / "auth.json").write_text(auth_json)
+
+    auth_mode = "oauth"
+    if auth_data.get("agent_identity"):
+        auth_mode = "agent_identity"
+    elif auth_data.get("auth_mode") == "apikey":
+        auth_mode = "apikey"
+
+    meta = AccountMeta(
+        id=account_id,
+        name=name,
+        email=email,
+        auth_mode=AuthMode(auth_mode),
+    )
+    save_meta(meta, _cd())
+
+    cfg = load_config(_cd())
+    if account_id not in cfg.api.selected_accounts:
+        cfg.api.selected_accounts.append(account_id)
+        save_config(cfg, _cd())
+
+    return meta.model_dump()
+
+
+@router.delete("/accounts/{account_id}")
+async def delete_account(account_id: str):
+    ad = account_dir(account_id, _cd())
+    if not ad.exists():
+        raise HTTPException(404, f"账号 {account_id} 不存在或已被删除")
+
+    shutil.rmtree(ad)
+
+    cfg = load_config(_cd())
+    cfg.api.selected_accounts = [a for a in cfg.api.selected_accounts if a != account_id]
+    save_config(cfg, _cd())
+
+    return {"ok": True}
+
+
+@router.put("/accounts/{account_id}/toggle")
+async def toggle_account(account_id: str, req: Request):
+    body = await req.json()
+    enabled = body.get("enabled", True)
+
+    cfg = load_config(_cd())
+    if enabled:
+        if account_id not in cfg.api.selected_accounts:
+            cfg.api.selected_accounts.append(account_id)
+    else:
+        cfg.api.selected_accounts = [a for a in cfg.api.selected_accounts if a != account_id]
+    save_config(cfg, _cd())
+
+    return {"ok": True}
+
+
+@router.post("/accounts/{account_id}/refresh")
+async def refresh_account(account_id: str):
+    try:
+        quota = await py_refresh_quota(account_id, _cd())
+        sub = await py_refresh_subscription(account_id, _cd())
+        meta = load_meta(account_id, _cd())
+        if meta is None:
+            raise HTTPException(404, f"账号 {account_id} 不存在")
+        return meta.model_dump()
+    except Exception as e:
+        raise HTTPException(500, str(e))

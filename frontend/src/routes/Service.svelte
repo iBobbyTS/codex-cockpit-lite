@@ -1,75 +1,51 @@
 <script>
-  import { invoke } from '@tauri-apps/api/core';
-
+  const API = '';
   let config = $state(null);
   let accounts = $state([]);
   let status = $state(null);
   let backendRunning = $state(false);
   let portMismatch = $state(false);
   let reportedPort = $state(0);
-  let noAccountsError = $state(false);
-  let hasTriedAutoStart = $state(false);
 
   async function loadConfig() {
-    config = await invoke('get_config');
+    try {
+      const resp = await fetch(API + '/api/config');
+      config = await resp.json();
+    } catch {}
   }
 
   async function loadAccounts() {
-    accounts = await invoke('list_accounts');
+    try {
+      const resp = await fetch(API + '/api/accounts');
+      accounts = await resp.json();
+    } catch {}
   }
 
   async function loadStatus() {
     try {
-      const base = config?.api?.port || 8844;
-      const resp = await fetch(`http://localhost:${base}/v1/cockpit/status`);
+      const resp = await fetch(API + '/v1/cockpit/status');
       if (resp.ok) {
         status = await resp.json();
-        backendRunning = status?.running || false;
+        backendRunning = true;
         if (status?.actual_port && status.actual_port !== config?.api?.port) {
           reportedPort = status.actual_port;
           portMismatch = true;
           if (config) {
             config.api.port = status.actual_port;
-            await invoke('save_config', { config });
+            await fetch(API + '/api/config', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(config) });
           }
         } else {
           portMismatch = false;
         }
       }
-    } catch (e) {
+    } catch {
       backendRunning = false;
-      status = null;
     }
-  }
-
-  async function start() {
-    if (!accounts.length) {
-      noAccountsError = true;
-      return;
-    }
-    noAccountsError = false;
-    try {
-      await invoke('start_backend');
-      await new Promise(r => setTimeout(r, 2000));
-      await loadConfig();
-      await loadStatus();
-    } catch (e) {
-      if (String(e).includes('NO_ACCOUNTS')) {
-        noAccountsError = true;
-      }
-    }
-  }
-
-  async function stop() {
-    await invoke('stop_backend');
-    backendRunning = false;
-    status = null;
-    portMismatch = false;
   }
 
   async function saveAutoSwitch() {
     if (!config) return;
-    await invoke('save_config', { config });
+    await fetch(API + '/api/config', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(config) });
   }
 
   $effect(() => { loadConfig(); loadAccounts(); });
@@ -80,30 +56,10 @@
       return () => clearInterval(interval);
     }
   });
-  // Auto-start backend when accounts exist and not already running
-  $effect(() => {
-    if (accounts.length > 0 && !backendRunning && !hasTriedAutoStart && config) {
-      hasTriedAutoStart = true;
-      start();
-    }
-  });
 </script>
 
 <div class="page">
   <h1>API 服务</h1>
-
-  {#if noAccountsError}
-    <div class="card mismatch-banner" style="background: rgba(239,68,68,0.12); border-color: var(--danger);">
-      <div class="mismatch-content">
-        <span class="mismatch-icon">⚠️</span>
-        <div>
-          <strong>无法启动服务</strong>
-          <p>当前没有已导入账号，请先在「账号管理」中导入账号。</p>
-        </div>
-      </div>
-      <button class="mismatch-close" onclick={() => noAccountsError = false}>✕</button>
-    </div>
-  {/if}
 
   {#if portMismatch}
     <div class="card mismatch-banner">
@@ -126,7 +82,7 @@
         {backendRunning ? '运行中' : '已停止'}
       </div>
       <div>
-        <span class="label">配置端口:</span> {config?.api?.port || ''}
+        <span class="label">端口:</span> {config?.api?.port || ''}
         {#if portMismatch}
           <span class="mismatch-hint">→ 实际: {reportedPort}</span>
         {/if}
@@ -140,12 +96,6 @@
         </div>
       {/if}
     </div>
-    <button
-      class={backendRunning ? 'danger' : 'primary'}
-      onclick={backendRunning ? stop : start}
-    >
-      {backendRunning ? '停止服务' : '启动服务'}
-    </button>
   </div>
 
   {#if config}

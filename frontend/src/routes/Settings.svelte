@@ -1,17 +1,21 @@
 <script>
-  import { invoke } from '@tauri-apps/api/core';
-
+  const API = '';
   let config = $state(null);
-  let configDir = $state('');
 
   async function loadConfig() {
-    config = await invoke('get_config');
-    configDir = await invoke('get_config_dir_path');
+    try {
+      const resp = await fetch(API + '/api/config');
+      config = await resp.json();
+    } catch {}
   }
 
   async function save() {
     if (!config) return;
-    await invoke('save_config', { config });
+    await fetch(API + '/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
   }
 
   $effect(() => { loadConfig(); });
