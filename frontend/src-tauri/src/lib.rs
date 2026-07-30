@@ -154,20 +154,15 @@ async fn api_call(method: String, path: String, body: Option<String>) -> Result<
             Err(e) => log(&format!("[cockpit] api_call ERR {} {} -> {}", m, p, e)),
         }
         match result {
-            Ok(resp) => {
-                let status = resp.status();
+            Ok(resp) => Ok(resp.into_string().unwrap_or_default()),
+            Err(ureq::Error::Status(code, resp)) => {
                 let body = resp.into_string().unwrap_or_default();
-                if status >= 400 {
-                    // Try to extract detail from JSON error response
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
-                        if let Some(detail) = val.get("detail").and_then(|d| d.as_str()) {
-                            let msg = detail.replace("UNSUPPORTED_AUTH: ", "");
-                            return Err(msg);
-                        }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if let Some(detail) = val.get("detail").and_then(|d| d.as_str()) {
+                        return Err(detail.replace("UNSUPPORTED_AUTH: ", ""));
                     }
-                    return Err(format!("请求失败: {}", body));
                 }
-                Ok(body)
+                Err(format!("HTTP {}: {}", code, body))
             }
             Err(e) => Err(format!("请求失败: {}", e)),
         }
