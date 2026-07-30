@@ -1,9 +1,9 @@
-use std::io::BufRead;
 use std::path::PathBuf;
-use std::process::{Child, Command};
 use std::sync::Mutex;
+use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::ShellExt;
 
-static BACKEND: Mutex<Option<Child>> = Mutex::new(None);
+static BACKEND_PORT: Mutex<u16> = Mutex::new(8844);
 
 fn find_backend_main() -> Option<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
@@ -17,22 +17,9 @@ fn find_backend_main() -> Option<PathBuf> {
     None
 }
 
-fn read_backend_port() -> u16 {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let config_path = PathBuf::from(home).join(".config").join("codex-cockpit").join("config.json");
-    if let Ok(content) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(port) = config.get("api").and_then(|a| a.get("port")).and_then(|p| p.as_u64()) {
-                return port as u16;
-            }
-        }
-    }
-    8844
-}
-
 #[tauri::command]
 fn api_call(method: String, path: String, body: Option<String>) -> Result<String, String> {
-    let port = read_backend_port();
+    let port = *BACKEND_PORT.lock().unwrap();
     let url = format!("http://127.0.0.1:{}{}", port, path);
     let resp = match method.as_str() {
         "GET" => ureq::get(&url).call(),
@@ -52,33 +39,37 @@ fn api_call(method: String, path: String, body: Option<String>) -> Result<String
     resp.into_string().map_err(|e| format!("Read error: {}", e))
 }
 
-fn start_python_backend() {
-    let python = std::env::var("CODEX_BACKEND_PYTHON").unwrap_or_else(|_| "python3".into());
-    let main_py = match find_backend_main() {
-        Some(p) => p,
-        None => return,
-    };
-
-    let child = Command::new(&python).arg(&main_py).spawn().ok();
-    *BACKEND.lock().unwrap() = child;
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    start_python_backend();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![api_call])
-        .on_window_event(|_window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
-                if let Ok(mut proc) = BACKEND.lock() {
-                    if let Some(mut child) = proc.take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
+        .setup(|app| {
+            let main_py = find_backend_main().expect("Cannot find backend main.py");
+            let shell = app.shell();
+
+            let (mut rx, _child) = shell
+                .command("python3")
+                .args([main_py.to_string_lossy().to_string()])
+                .spawn()
+                .expect("Failed to spawn Python backend");
+
+            // Read PORT=<number> from stdout asynchronously
+            tauri::async_runtime::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    if let CommandEvent::Stdout(line) = event {
+                        let text = String::from_utf8_lossy(&line);
+                        if let Some(port_str) = text.strip_prefix("PORT=") {
+                            if let Ok(port) = port_str.trim().parse::<u16>() {
+                                *BACKEND_PORT.lock().unwrap() = port;
+                                break;
+                            }
+                        }
                     }
                 }
-            }
+            });
+
+            Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

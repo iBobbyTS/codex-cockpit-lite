@@ -193,7 +193,10 @@ def main():
     actual_port = find_available_port(desired_port, host)
     set_actual_port(actual_port)
 
-    # Write back to config if port changed (for persistence across restarts)
+    # Notify parent (Tauri) of the actual port via stdout
+    print(f"PORT={actual_port}", flush=True)
+
+    # Write back to config if port changed
     if actual_port != cfg.api.port:
         cfg.api.port = actual_port
         save_config(cfg, _config_dir)
