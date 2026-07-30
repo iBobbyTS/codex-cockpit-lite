@@ -17,7 +17,8 @@
         "width": 960,
         "height": 680,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "url": "http://localhost:8844"
       }
     ],
     "security": {
