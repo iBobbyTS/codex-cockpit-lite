@@ -33,13 +33,15 @@
   async function importAccount() {
     errorMsg = '';
     try {
-      await invoke('import_account', {
+      const result = await invoke('import_account', {
         authJson: importJson.trim(),
         name: importName.trim() || 'Codex Account',
       });
       showImport = false;
       importJson = '';
       importName = '';
+      // Refresh quota immediately
+      try { await invoke('refresh_account', { accountId: result.id }); } catch {}
       await refreshAll();
     } catch (e) {
       errorMsg = '导入失败: ' + String(e);
@@ -49,7 +51,8 @@
   async function importOfficial() {
     errorMsg = '';
     try {
-      await invoke('import_from_official_codex');
+      const result = await invoke('import_from_official_codex');
+      try { await invoke('refresh_account', { accountId: result.id }); } catch {}
       await refreshAll();
     } catch (e) {
       errorMsg = '从 ~/.codex 导入失败: ' + String(e);

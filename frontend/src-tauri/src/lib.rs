@@ -195,6 +195,42 @@ fn import_account(auth_json: String, name: String) -> Result<AccountMeta, String
 }
 
 #[tauri::command]
+fn refresh_account(account_id: String) -> Result<AccountMeta, String> {
+    let python = std::env::var("CODEX_BACKEND_PYTHON")
+        .unwrap_or_else(|_| "python3".into());
+    let backend_dir = std::env::current_dir()
+        .unwrap_or_default()
+        .parent()
+        .map(|p| p.join("backend"))
+        .unwrap_or_default();
+    let config_dir = get_config_dir();
+
+    let output = Command::new(&python)
+        .arg(backend_dir.join("quota_cli.py"))
+        .arg(&account_id)
+        .arg(config_dir.to_string_lossy().to_string())
+        .output()
+        .map_err(|e| format!("配额刷新失败: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!("配额刷新进程异常: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("解析配额结果失败: {}: {}", e, stdout))?;
+
+    if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Err(result.get("error").and_then(|v| v.as_str()).unwrap_or("未知错误").into());
+    }
+
+    // Read updated meta
+    let meta_path = ensure_config_dir().join("accounts").join(&account_id).join("meta.json");
+    let content = fs::read_to_string(&meta_path).map_err(|e| format!("读取meta失败: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn import_from_official_codex() -> Result<AccountMeta, String> {
     let home = dirs_next::home_dir().ok_or("Cannot find home directory")?;
     let auth_path = home.join(".codex").join("auth.json");
@@ -373,6 +409,7 @@ pub fn main() {
             get_config,
             save_config,
             list_accounts,
+            refresh_account,
             import_account,
             import_from_official_codex,
             delete_account,
