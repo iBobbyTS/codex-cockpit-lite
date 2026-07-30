@@ -57,6 +57,7 @@ class AccountMeta(BaseModel):
     plan_type: str = ""
     subscription_expires_at: Optional[int] = None
     team_name: str = ""
+    account_id: str = ""
     quota: QuotaSnapshot = Field(default_factory=QuotaSnapshot)
     enabled: bool = True
     speed: SpeedMode = SpeedMode.STANDARD

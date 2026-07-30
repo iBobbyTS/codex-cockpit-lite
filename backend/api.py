@@ -38,11 +38,41 @@ def _cd() -> Path:
     return _config_dir or get_config_dir()
 
 
+def _extract_account_id(auth_data: dict) -> str:
+    """Extract chatgpt_account_id from JWT access_token claims."""
+    tokens = auth_data.get("tokens", {})
+    access_token = tokens.get("access_token", "")
+    if not access_token:
+        return ""
+    try:
+        import jwt
+        payload = jwt.decode(access_token, options={"verify_signature": False})
+        auth = payload.get("https://api.openai.com/auth", {})
+        if isinstance(auth, dict):
+            return auth.get("account_id", "") or ""
+    except Exception:
+        pass
+    return ""
+
+
 def _find_account_by_email(email: str):
     if not email:
         return None
     for meta in list_account_metas(_cd()):
         if meta.email.lower() == email.lower():
+            return meta
+    return None
+
+
+def _dedup_account(email: str, account_id: str):
+    """Same email + same account_id = update. Same email + diff id = new."""
+    if not email:
+        return None
+    for meta in list_account_metas(_cd()):
+        if meta.email.lower() != email.lower():
+            continue
+        # Match if stored account has no account_id, or account_id matches
+        if not meta.account_id or meta.account_id == account_id:
             return meta
     return None
 
@@ -114,8 +144,10 @@ async def import_account(req: Request):
     if not name:
         name = email.split("@")[0] if email else "Codex Account"
 
-    # Dedup by email: update existing account if same email found
-    existing = _find_account_by_email(email)
+    # Extract account_id from JWT for team-aware dedup
+    chatgpt_account_id = _extract_account_id(auth_data)
+
+    existing = _dedup_account(email, chatgpt_account_id or "")
     if existing:
         account_id = existing.id
     else:
@@ -130,6 +162,7 @@ async def import_account(req: Request):
         name=name,
         email=email,
         auth_mode=AuthMode("oauth"),
+        account_id=chatgpt_account_id or "",
     )
     save_meta(meta, _cd())
 
@@ -170,8 +203,8 @@ async def import_from_codex():
 
     name = email.split("@")[0] if email else "Codex Account"
 
-    # Dedup by email
-    existing = _find_account_by_email(email)
+    chatgpt_account_id = _extract_account_id(auth_data)
+    existing = _dedup_account(email, chatgpt_account_id or "")
     if existing:
         account_id = existing.id
     else:
@@ -186,6 +219,7 @@ async def import_from_codex():
         name=name,
         email=email,
         auth_mode=AuthMode("oauth"),
+        account_id=chatgpt_account_id or "",
     )
     save_meta(meta, _cd())
 
