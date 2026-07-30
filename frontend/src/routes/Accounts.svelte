@@ -8,6 +8,7 @@
   let config = $state(null);
   let accounts = $state([]);
   let showImport = $state(false);
+  let deleteTarget = $state(null);
   let importJson = $state('');
   let importName = $state('');
   let errorMsg = $state('');
@@ -54,15 +55,15 @@
     }
   }
 
-  async function deleteAccount(id) {
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    const id = deleteTarget;
+    deleteTarget = null;
     errorMsg = '';
-    console.log('[frontend] deleteAccount:', id);
     try {
-      const result = await api('DELETE', '/api/accounts/' + id);
-      console.log('[frontend] delete result:', result);
+      await api('DELETE', '/api/accounts/' + id);
       await refreshAll();
     } catch (e) {
-      console.error('[frontend] delete error:', e);
       errorMsg = '删除失败: ' + String(e);
       await refreshAll();
     }
@@ -122,6 +123,16 @@
     </div>
   {/if}
 
+  {#if deleteTarget}
+    <div class="card confirm-overlay">
+      <p>确认删除此账号？此操作不可撤销。</p>
+      <div class="confirm-actions">
+        <button class="danger" onclick={confirmDelete}>确认删除</button>
+        <button onclick={() => deleteTarget = null}>取消</button>
+      </div>
+    </div>
+  {/if}
+
   <div class="account-list">
     {#each accounts as account (account.id)}
       {@const sel = selectedIds().has(account.id)}
@@ -166,7 +177,7 @@
           >
             {sel ? '禁用' : '启用'}
           </button>
-          <button class="danger" onclick={() => deleteAccount(account.id)}>删除</button>
+          <button class="danger" onclick={() => deleteTarget = account.id}>删除</button>
         </div>
       </div>
     {:else}
@@ -232,6 +243,14 @@
 
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
   .empty { color: var(--text-muted); text-align: center; padding: 40px; }
+
+  .confirm-overlay {
+    margin-bottom: 16px;
+    border-color: var(--danger);
+    text-align: center;
+  }
+  .confirm-overlay p { font-size: 14px; margin-bottom: 12px; }
+  .confirm-actions { display: flex; justify-content: center; gap: 10px; }
 
   .error-banner {
     background: rgba(239, 68, 68, 0.12);
