@@ -45,6 +45,7 @@ pub fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_http::init())
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 if let Ok(mut proc) = BACKEND.lock() {

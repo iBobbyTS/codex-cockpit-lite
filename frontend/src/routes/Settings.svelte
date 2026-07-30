@@ -1,5 +1,6 @@
 <script>
-  const API = 'http://localhost:8844';
+  import { fetch } from '@tauri-apps/plugin-http';
+  const API = 'http://127.0.0.1:8844';
   let config = $state(null);
 
   async function loadConfig() {
