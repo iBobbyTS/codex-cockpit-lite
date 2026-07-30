@@ -58,7 +58,6 @@ fn start_python_backend() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     start_python_backend();
-    let _ = std::process::Command::new("open").arg("http://127.0.0.1:8844").spawn();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
