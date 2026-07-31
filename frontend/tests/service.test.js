@@ -12,6 +12,7 @@ function config() {
       port: 8844,
       bind_host: '127.0.0.1',
       speed: 'standard',
+      password: 'sandrone',
       selected_accounts: [],
       auto_switch: {
         enabled: true,
@@ -43,10 +44,23 @@ test('显示完整服务地址并复制', async () => {
 
   expect(await screen.findByText('http://127.0.0.1:8844/v1')).toBeTruthy();
   expect(screen.queryByText('端口:')).toBeNull();
-  await fireEvent.click(screen.getByRole('button', { name: '复制' }));
+  const serviceStatus = screen.getByLabelText('服务状态');
+  const connectionInfo = screen.getByLabelText('连接信息');
+  expect(serviceStatus.textContent).toContain('状态:');
+  expect(serviceStatus.textContent).toContain('活跃账号:');
+  expect(serviceStatus.textContent).toContain('请求总数:');
+  expect(serviceStatus.textContent).not.toContain('服务地址:');
+  expect(connectionInfo.textContent).toContain('服务地址:');
+  expect(connectionInfo.textContent).toContain('API Key:');
+
+  await fireEvent.click(screen.getByRole('button', { name: '复制服务地址' }));
 
   expect(copyText).toHaveBeenCalledWith('http://127.0.0.1:8844/v1');
   expect(await screen.findByText('服务地址已复制')).toBeTruthy();
+
+  await fireEvent.click(screen.getByRole('button', { name: '复制 API Key' }));
+  expect(copyText).toHaveBeenCalledWith('sandrone');
+  expect(await screen.findByText('API Key 已复制')).toBeTruthy();
 });
 
 test('显示并保存 API 服务设置', async () => {
@@ -65,8 +79,12 @@ test('显示并保存 API 服务设置', async () => {
   expect(screen.getByRole('combobox', { name: '绑定地址' }).value).toBe('127.0.0.1');
   const speed = screen.getByRole('combobox', { name: '默认速度' });
   expect(speed.value).toBe('standard');
+  const password = screen.getByRole('textbox', { name: 'API Key' });
+  expect(password.type).toBe('text');
+  expect(password.value).toBe('sandrone');
 
   await fireEvent.change(speed, { target: { value: 'fast' } });
+  await fireEvent.input(password, { target: { value: 'visible-password' } });
 
   expect(apiClient.mock.calls.filter(([method]) => method === 'PUT')).toHaveLength(0);
   await fireEvent.click(screen.getByRole('button', { name: '保存' }));
@@ -77,7 +95,7 @@ test('显示并保存 API 服务设置', async () => {
       'PUT',
       '/api/config',
       expect.objectContaining({
-        api: expect.objectContaining({ speed: 'fast' }),
+        api: expect.objectContaining({ speed: 'fast', password: 'visible-password' }),
       }),
     );
   });

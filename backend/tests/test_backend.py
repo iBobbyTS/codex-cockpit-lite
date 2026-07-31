@@ -75,6 +75,7 @@ def test_default_config(tmp_path: Path) -> None:
     assert cfg.version == 1
     assert cfg.api.port == 8844
     assert cfg.api.speed == SpeedMode.STANDARD
+    assert cfg.api.password == "sandrone"
     assert cfg.api.account_order == []
     assert cfg.api.selected_accounts == []
     assert cfg.api.auto_switch.enabled is True
@@ -84,11 +85,13 @@ def test_save_and_reload_config(tmp_path: Path) -> None:
     cfg = load_config(tmp_path)
     cfg.api.port = 9999
     cfg.api.speed = SpeedMode.FAST
+    cfg.api.password = "changed-password"
     save_config(cfg, tmp_path)
 
     reloaded = load_config(tmp_path)
     assert reloaded.api.port == 9999
     assert reloaded.api.speed == SpeedMode.FAST
+    assert reloaded.api.password == "changed-password"
 
 
 def test_config_dir_endpoint_reports_backend_path(tmp_path: Path) -> None:

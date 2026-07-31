@@ -35,6 +35,7 @@
         port: config.api.port,
         bind_host: config.api.bind_host,
         speed: config.api.speed,
+        password: config.api.password ?? 'sandrone',
       };
     } catch (error) {
       errorMsg = '读取配置失败: ' + String(error);
@@ -92,6 +93,7 @@
         port: serviceDraft.port,
         bind_host: serviceDraft.bind_host,
         speed: serviceDraft.speed,
+        password: serviceDraft.password,
       },
     };
     const saved = await saveConfig(nextConfig, 'API 服务设置已保存', '保存 API 服务设置失败');
@@ -104,16 +106,24 @@
     return saveConfig(config, '自动切换设置已保存', '保存自动切换设置失败');
   }
 
-  async function copyServiceAddress() {
-    if (!status?.service_url) return;
+  async function copyValue(value, successMessage, failureMessage) {
+    if (!value) return;
     errorMsg = '';
     savedMsg = '';
     try {
-      await copyText(status.service_url);
-      savedMsg = '服务地址已复制';
+      await copyText(value);
+      savedMsg = successMessage;
     } catch (error) {
-      errorMsg = '复制服务地址失败: ' + String(error);
+      errorMsg = failureMessage + ': ' + String(error);
     }
+  }
+
+  function copyServiceAddress() {
+    return copyValue(status?.service_url, '服务地址已复制', '复制服务地址失败');
+  }
+
+  function copyPassword() {
+    return copyValue(config?.api.password ?? 'sandrone', 'API Key 已复制', '复制 API Key 失败');
   }
 
   $effect(() => {
@@ -156,17 +166,12 @@
   {/if}
 
   <div class="card status-card">
-    <div class="status-row">
+    <div class="status-line" aria-label="服务状态">
       <div>
         <span class="label">状态:</span>
         <span class="status-dot" class:running={backendRunning} class:stopped={!backendRunning}
         ></span>
         {backendRunning ? '运行中' : '已停止'}
-      </div>
-      <div class="service-address">
-        <span class="label">服务地址:</span>
-        <code>{status?.service_url || ''}</code>
-        <button onclick={copyServiceAddress} disabled={!status?.service_url}>复制</button>
       </div>
       {#if status}
         <div>
@@ -178,6 +183,22 @@
           {status.total_requests}
         </div>
       {/if}
+    </div>
+    <div class="connection-line" aria-label="连接信息">
+      <div class="copyable-value">
+        <span class="label">服务地址:</span>
+        <code>{status?.service_url || ''}</code>
+        <button
+          aria-label="复制服务地址"
+          onclick={copyServiceAddress}
+          disabled={!status?.service_url}>复制</button
+        >
+      </div>
+      <div class="copyable-value">
+        <span class="label">API Key:</span>
+        <code>{config?.api.password ?? 'sandrone'}</code>
+        <button aria-label="复制 API Key" onclick={copyPassword} disabled={!config}>复制</button>
+      </div>
     </div>
   </div>
 
@@ -208,6 +229,10 @@
               <option value="standard">Standard</option>
               <option value="fast">Fast</option>
             </select>
+          </label>
+          <label>
+            API Key
+            <input type="text" bind:value={serviceDraft.password} />
           </label>
         </div>
       {/if}
@@ -264,28 +289,33 @@
 
   .status-card {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 16px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
   }
-  .status-row {
+  .status-line,
+  .connection-line {
     display: flex;
     gap: 20px;
     flex-wrap: wrap;
   }
-  .service-address {
+  .connection-line {
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .copyable-value {
     display: flex;
     align-items: center;
     gap: 6px;
   }
-  .service-address code {
+  .copyable-value code {
     color: var(--text);
     font-size: 13px;
   }
-  .service-address .label {
+  .copyable-value .label {
     margin-right: 0;
   }
-  .service-address button {
+  .copyable-value button {
     padding: 3px 8px;
     font-size: 12px;
   }
