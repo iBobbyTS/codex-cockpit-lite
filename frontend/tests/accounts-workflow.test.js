@@ -109,7 +109,7 @@ test('导入完成后切换为该账号独立刷新，刷新返回前标记保�
   const refreshedCard = screen.getByText('test@example.com').closest('.account-card');
   expect(within(refreshedCard).getByText('100%')).toBeTruthy();
   expect(within(refreshedCard).getByText('94%')).toBeTruthy();
-  expect(within(refreshedCard).getByText('pro')).toBeTruthy();
+  expect(within(refreshedCard).getByText('Pro 20x')).toBeTruthy();
 });
 
 test('手动刷新不进入导入状态，并在返回时同时更新数据和移除标记', async () => {

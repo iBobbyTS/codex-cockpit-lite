@@ -1,6 +1,7 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
   import { SvelteSet } from 'svelte/reactivity';
+  import { getCodexPlanPresentation } from '../lib/codexPlans.js';
 
   async function tauriApi(method, path, body) {
     const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
@@ -279,6 +280,7 @@
   <div class="account-list">
     {#each accounts as account (account.id)}
       {@const sel = selectedIds().has(account.id)}
+      {@const plan = getCodexPlanPresentation(account.plan_type)}
       <div class="card account-card">
         <div class="account-main">
           <div class="account-info">
@@ -286,8 +288,8 @@
             <span class="email">{account.email}</span>
             <div class="tags">
               {#if account.plan_type}
-                <span class="badge {account.plan_type === 'pro' ? 'pro' : account.plan_type.includes('team') ? 'team' : 'free'}">
-                  {account.plan_type}
+                <span class="badge {plan.className}">
+                  {plan.label}
                 </span>
               {/if}
               {#if account.team_name}
