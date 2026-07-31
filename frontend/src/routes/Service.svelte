@@ -3,15 +3,25 @@
 
   let { apiClient = defaultApiClient, pollIntervalMs = 3000 } = $props();
   let config = $state(null);
+  let serviceDraft = $state(null);
   let status = $state(null);
   let backendRunning = $state(false);
   let portMismatch = $state(false);
+  let sourcePort = $state(0);
   let reportedPort = $state(0);
+  let startupPortChecked = $state(false);
   let errorMsg = $state('');
+  let savedMsg = $state('');
+  let saving = $state(false);
 
   async function loadConfig() {
     try {
       config = await apiClient('GET', '/api/config');
+      serviceDraft = {
+        port: config.api.port,
+        bind_host: config.api.bind_host,
+        speed: config.api.speed,
+      };
     } catch (error) {
       errorMsg = '读取配置失败: ' + String(error);
     }
@@ -22,15 +32,18 @@
       status = await apiClient('GET', '/v1/cockpit/status');
       if (status) {
         backendRunning = true;
-        if (status?.actual_port && status.actual_port !== config?.api?.port) {
-          reportedPort = status.actual_port;
-          portMismatch = true;
-          if (config) {
+        if (!startupPortChecked && config) {
+          startupPortChecked = true;
+          if (status?.actual_port && status.actual_port !== config.api.port) {
+            sourcePort = config.api.port;
+            reportedPort = status.actual_port;
+            portMismatch = true;
             config.api.port = status.actual_port;
+            if (serviceDraft) {
+              serviceDraft.port = status.actual_port;
+            }
             await apiClient('PUT', '/api/config', config);
           }
-        } else {
-          portMismatch = false;
         }
       }
     } catch (error) {
@@ -39,13 +52,42 @@
     }
   }
 
-  async function saveAutoSwitch() {
-    if (!config) return;
+  async function saveConfig(nextConfig, successMessage, failureMessage) {
+    if (!nextConfig || saving) return false;
+    saving = true;
+    errorMsg = '';
+    savedMsg = '';
     try {
-      await apiClient('PUT', '/api/config', config);
+      await apiClient('PUT', '/api/config', nextConfig);
+      savedMsg = successMessage;
+      return true;
     } catch (error) {
-      errorMsg = '保存自动切换设置失败: ' + String(error);
+      errorMsg = failureMessage + ': ' + String(error);
+      return false;
+    } finally {
+      saving = false;
     }
+  }
+
+  async function saveServiceConfig() {
+    if (!config || !serviceDraft) return;
+    const nextConfig = {
+      ...config,
+      api: {
+        ...config.api,
+        port: serviceDraft.port,
+        bind_host: serviceDraft.bind_host,
+        speed: serviceDraft.speed,
+      },
+    };
+    const saved = await saveConfig(nextConfig, 'API 服务设置已保存', '保存 API 服务设置失败');
+    if (saved) {
+      config = nextConfig;
+    }
+  }
+
+  function saveAutoSwitch() {
+    return saveConfig(config, '自动切换设置已保存', '保存自动切换设置失败');
   }
 
   $effect(() => {
@@ -73,6 +115,15 @@
     </div>
   {/if}
 
+  {#if savedMsg}
+    <div class="toast success">
+      {savedMsg}
+      <button class="toast-close" aria-label="关闭保存提示" onclick={() => (savedMsg = '')}
+        >✕</button
+      >
+    </div>
+  {/if}
+
   {#if portMismatch}
     <div class="card mismatch-banner">
       <div class="mismatch-content">
@@ -80,7 +131,7 @@
         <div>
           <strong>端口变更通知</strong>
           <p>
-            端口 {config?.api?.port} 已被更新为 {reportedPort}（源端口被占用）。配置已自动同步。
+            端口 {sourcePort} 已被更新为 {reportedPort}（源端口被占用）。配置已自动同步。
           </p>
         </div>
       </div>
@@ -117,6 +168,37 @@
   </div>
 
   {#if config}
+    <div class="card" style="margin-top: 16px;">
+      <div class="card-header">
+        <h2>服务配置</h2>
+        <button onclick={saveServiceConfig} disabled={saving}>
+          {saving ? '保存中...' : '保存'}
+        </button>
+      </div>
+      {#if serviceDraft}
+        <div class="service-form">
+          <label>
+            端口
+            <input type="number" min="1" max="65535" bind:value={serviceDraft.port} />
+          </label>
+          <label>
+            绑定地址
+            <select bind:value={serviceDraft.bind_host}>
+              <option value="127.0.0.1">127.0.0.1 (仅本机)</option>
+              <option value="0.0.0.0">0.0.0.0 (局域网)</option>
+            </select>
+          </label>
+          <label>
+            默认速度
+            <select bind:value={serviceDraft.speed}>
+              <option value="standard">Standard</option>
+              <option value="fast">Fast</option>
+            </select>
+          </label>
+        </div>
+      {/if}
+    </div>
+
     <div class="card" style="margin-top: 16px;">
       <h2>自动切换</h2>
       <label class="toggle">
@@ -207,6 +289,34 @@
   }
   .status-dot.stopped {
     background: var(--danger);
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 10px;
+  }
+  .card-header h2 {
+    margin-bottom: 0;
+  }
+  .service-form {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .service-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+  .service-form input,
+  .service-form select {
+    width: 100%;
   }
 
   .toggle {
@@ -346,10 +456,19 @@
   .toast.error {
     background: var(--danger);
   }
+  .toast.success {
+    background: var(--success);
+  }
   .toast-close {
     background: none;
     border: none;
     color: white;
     padding: 0 2px;
+  }
+
+  @media (max-width: 720px) {
+    .service-form {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
