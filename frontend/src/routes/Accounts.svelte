@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { SvelteSet } from 'svelte/reactivity';
   import { getCodexPlanPresentation } from '../lib/codexPlans.js';
+  import { formatQuotaReset } from '../lib/quotaTime.js';
 
   async function tauriApi(method, path, body) {
     const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
@@ -21,6 +22,7 @@
   let importJson = $state('');
   let importName = $state('');
   let errorMsg = $state('');
+  let nowMs = $state(Date.now());
   const refreshingIds = new SvelteSet();
 
   async function refreshAll() {
@@ -205,6 +207,11 @@
     const interval = setInterval(refreshAll, pollIntervalMs);
     return () => clearInterval(interval);
   });
+
+  $effect(() => {
+    const interval = setInterval(() => { nowMs = Date.now(); }, 60_000);
+    return () => clearInterval(interval);
+  });
 </script>
 
 <div class="page">
@@ -308,14 +315,14 @@
                 <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
               </div>
               <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}>{account.quota?.weekly_percent || 0}%</span>
-              <span class="quota-col">5h</span>
+              <span class="quota-reset">{formatQuotaReset(account.quota?.weekly_resets_at, nowMs)}</span>
             </div>
             <div class="quota-row">
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.hourly_percent || 0}%"></div>
               </div>
               <span class="quota-pct" class:low={account.quota?.hourly_percent < 20}>{account.quota?.hourly_percent || 0}%</span>
-              <span class="quota-col">7d</span>
+              <span class="quota-reset">{formatQuotaReset(account.quota?.hourly_resets_at, nowMs)}</span>
             </div>
           </div>
         </div>
@@ -378,7 +385,7 @@
   .team { font-size: 12px; color: var(--text-muted); }
 
   .account-quota { position: relative; display: flex; flex-direction: column; gap: 2px; padding-right: 20px; }
-  .quota-row { display: grid; grid-template-columns: 80px 32px 24px; align-items: center; gap: 6px; }
+  .quota-row { display: grid; grid-template-columns: 80px 32px 128px; align-items: center; gap: 6px; }
   .quota-bar {
     width: 80px;
     height: 5px;
@@ -397,7 +404,7 @@
   .refresh-indicator { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
   .refresh-spin { display: block; font-size: 14px; color: var(--accent); animation: spin 1s linear infinite; }
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-  .quota-col { font-size: 10px; color: var(--text-muted); width: 24px; text-align: right; }
+  .quota-reset { font-size: 10px; color: var(--text-muted); width: 128px; white-space: nowrap; text-align: left; }
 
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
   .empty { color: var(--text-muted); text-align: center; padding: 40px; }
