@@ -40,6 +40,20 @@ def test_save_and_reload_config():
         assert reloaded.api.speed == SpeedMode.FAST
 
 
+def test_config_dir_endpoint_reports_backend_path():
+    from api import get_config_dir_info, set_api_config_dir
+    from config import get_config_dir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        config_dir = Path(tmp)
+        set_api_config_dir(config_dir)
+        try:
+            result = get_config_dir_info()
+            assert result == {"path": str(config_dir)}
+        finally:
+            set_api_config_dir(get_config_dir())
+
+
 def test_account_meta_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:
         config_dir = Path(tmp)

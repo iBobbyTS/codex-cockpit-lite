@@ -72,6 +72,11 @@ async def get_config():
     return load_config(_cd()).model_dump()
 
 
+@router.get("/config-dir")
+def get_config_dir_info():
+    return {"path": str(_cd().expanduser())}
+
+
 @router.put("/config")
 async def put_config(body: dict):
     try:
