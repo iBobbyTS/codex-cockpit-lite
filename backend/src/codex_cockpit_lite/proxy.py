@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -23,52 +23,97 @@ UPSTREAM_BASE = "https://api.openai.com"
 CHATGPT_BASE = "https://chatgpt.com"
 UPSTREAM_TIMEOUT = httpx.Timeout(60.0, connect=20.0)
 
-# Rate-limit tracking per account
-_rate_limit_cache: dict[str, dict] = {}
-_account_switch_lock = asyncio.Lock()
-
 # Request counters
 _request_count = 0
-_active_account_index = 0
+_active_account_id = ""
+_account_switch_lock = threading.Lock()
 _recent_requests: list[dict] = []
 
 
-def get_active_account(config_dir: Path | None = None) -> dict | None:
-    """Get the currently active account (first selected, enabled)."""
-    accounts = list_selected_accounts(config_dir)
-    if not accounts:
-        return None
-    global _active_account_index
-    if _active_account_index >= len(accounts):
-        _active_account_index = 0
-    meta = accounts[_active_account_index]
+def is_account_schedulable(account) -> bool:
+    """An account is usable until either the 5h or 7d quota is 100% consumed."""
+    return account.quota.hourly_percent > 0 and account.quota.weekly_percent > 0
+
+
+def _account_payload(account) -> dict:
     return {
-        "id": meta.id,
-        "email": meta.email,
-        "auth_mode": meta.auth_mode.value,
+        "id": account.id,
+        "email": account.email,
+        "auth_mode": account.auth_mode.value,
     }
 
 
-def switch_to_next_account(config_dir: Path | None = None) -> dict | None:
-    """Switch to the next available selected account."""
-    global _active_account_index
-    accounts = list_selected_accounts(config_dir)
+def _next_schedulable_account(accounts, current_id: str):
     if not accounts:
         return None
-    _active_account_index = (_active_account_index + 1) % len(accounts)
-    meta = accounts[_active_account_index]
+    start_index = next(
+        (index for index, account in enumerate(accounts) if account.id == current_id),
+        -1,
+    )
+    for offset in range(1, len(accounts) + 1):
+        account = accounts[(start_index + offset) % len(accounts)]
+        if is_account_schedulable(account):
+            return account
+    return None
+
+
+def get_active_account(config_dir: Path | None = None) -> dict | None:
+    """Return the active schedulable account, advancing if it became exhausted."""
+    accounts = list_selected_accounts(config_dir)
+    global _active_account_id
+    with _account_switch_lock:
+        active = next(
+            (
+                account
+                for account in accounts
+                if account.id == _active_account_id and is_account_schedulable(account)
+            ),
+            None,
+        )
+        if active is None:
+            active = _next_schedulable_account(accounts, _active_account_id)
+            _active_account_id = active.id if active else ""
+        return _account_payload(active) if active else None
+
+
+def switch_to_next_account(config_dir: Path | None = None) -> dict | None:
+    """Switch to the next selected account whose 5h and 7d quotas remain positive."""
+    global _active_account_id
+    accounts = list_selected_accounts(config_dir)
+    with _account_switch_lock:
+        meta = _next_schedulable_account(accounts, _active_account_id)
+        _active_account_id = meta.id if meta else ""
+    if meta is None:
+        return None
+    active_index = next(index for index, account in enumerate(accounts) if account.id == meta.id)
     logger.info(
         "Switched to account %d/%d: %s (%s)",
-        _active_account_index + 1,
+        active_index + 1,
         len(accounts),
         meta.email,
         meta.id,
     )
-    return {
-        "id": meta.id,
-        "email": meta.email,
-        "auth_mode": meta.auth_mode.value,
-    }
+    return _account_payload(meta)
+
+
+def activate_account(account_id: str, config_dir: Path | None = None) -> dict | None:
+    """Force the active cursor to a specific selected, schedulable account."""
+    accounts = list_selected_accounts(config_dir)
+    account = next(
+        (
+            candidate
+            for candidate in accounts
+            if candidate.id == account_id and is_account_schedulable(candidate)
+        ),
+        None,
+    )
+    if account is None:
+        return None
+    global _active_account_id
+    with _account_switch_lock:
+        _active_account_id = account.id
+    logger.info("Activated account: %s (%s)", account.email, account.id)
+    return _account_payload(account)
 
 
 def record_request(log_entry: dict) -> None:
@@ -88,8 +133,15 @@ def get_request_count() -> int:
     return _request_count
 
 
-def get_active_index() -> int:
-    return _active_account_index
+def get_active_index(config_dir: Path | None = None) -> int:
+    accounts = list_selected_accounts(config_dir)
+    active = get_active_account(config_dir)
+    if active is None:
+        return 0
+    return next(
+        (index for index, account in enumerate(accounts) if account.id == active["id"]),
+        0,
+    )
 
 
 async def proxy_responses(request: Request, config_dir: Path | None = None) -> Response:

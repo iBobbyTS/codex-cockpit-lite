@@ -31,7 +31,6 @@ class ApiConfig(BaseModel):
 class AutoSwitchConfig(BaseModel):
     enabled: bool = True
     strategy: AutoSwitchStrategy = AutoSwitchStrategy.SEQUENTIAL
-    quota_threshold_percent: int = 95
 
 
 class AppConfig(BaseModel):

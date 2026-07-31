@@ -39,6 +39,12 @@ from codex_cockpit_lite.models import (
     QuotaSnapshot,
     SpeedMode,
 )
+from codex_cockpit_lite.proxy import (
+    activate_account,
+    get_active_account,
+    is_account_schedulable,
+    switch_to_next_account,
+)
 from codex_cockpit_lite.quota import _collect_records, _parse_timestamp
 from codex_cockpit_lite.status import build_service_url, find_active_lan_address
 
@@ -144,6 +150,124 @@ def test_app_config_serialization() -> None:
     data = cfg.model_dump()
     assert data["api"]["port"] == 1456
     assert AppConfig(**data).api.speed == SpeedMode.FAST
+    assert "quota_threshold_percent" not in data["api"]["auto_switch"]
+
+
+def test_legacy_quota_threshold_is_removed_from_config_file(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "api": {
+                    "auto_switch": {
+                        "enabled": True,
+                        "strategy": "sequential",
+                        "quota_threshold_percent": 95,
+                    }
+                },
+            }
+        )
+    )
+
+    cfg = load_config(tmp_path)
+
+    assert "quota_threshold_percent" not in cfg.model_dump()["api"]["auto_switch"]
+    assert "quota_threshold_percent" not in json.loads(path.read_text())["api"]["auto_switch"]
+
+
+def test_scheduler_requires_both_quotas_and_cycles_in_config_order(tmp_path: Path) -> None:
+    accounts = [
+        AccountMeta(
+            id="exhausted",
+            email="exhausted@example.com",
+            quota=QuotaSnapshot(weekly_percent=0, hourly_percent=100),
+        ),
+        AccountMeta(
+            id="second",
+            email="second@example.com",
+            quota=QuotaSnapshot(weekly_percent=80, hourly_percent=70),
+        ),
+        AccountMeta(
+            id="third",
+            email="third@example.com",
+            quota=QuotaSnapshot(weekly_percent=60, hourly_percent=50),
+        ),
+    ]
+    for account in accounts:
+        save_meta(account, tmp_path)
+    cfg = load_config(tmp_path)
+    cfg.api.selected_accounts = [account.id for account in accounts]
+    save_config(cfg, tmp_path)
+
+    assert is_account_schedulable(accounts[0]) is False
+    assert get_active_account(tmp_path)["id"] == "second"
+    assert activate_account("third", tmp_path)["id"] == "third"
+    assert switch_to_next_account(tmp_path)["id"] == "second"
+
+
+@pytest.mark.asyncio
+async def test_force_activate_and_reorder_accounts(tmp_path: Path) -> None:
+    for account_id in ["first", "second", "third"]:
+        save_meta(
+            AccountMeta(
+                id=account_id,
+                email=f"{account_id}@example.com",
+                quota=QuotaSnapshot(weekly_percent=100, hourly_percent=100),
+            ),
+            tmp_path,
+        )
+    cfg = load_config(tmp_path)
+    cfg.api.selected_accounts = ["first", "second", "third"]
+    save_config(cfg, tmp_path)
+    set_api_config_dir(tmp_path)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            activated = await client.post("/api/accounts/second/activate")
+            reordered = await client.put(
+                "/api/accounts/order",
+                json={"account_ids": ["second", "third", "first"]},
+            )
+            listed = await client.get("/api/accounts")
+
+        assert activated.status_code == 200
+        assert activated.json()["active_account_id"] == "second"
+        assert reordered.status_code == 200
+        assert load_config(tmp_path).api.selected_accounts == ["second", "third", "first"]
+        assert [account["id"] for account in listed.json()] == ["second", "third", "first"]
+        assert [account["is_active"] for account in listed.json()] == [True, False, False]
+        assert switch_to_next_account(tmp_path)["id"] == "third"
+    finally:
+        set_api_config_dir(get_config_dir())
+
+
+@pytest.mark.asyncio
+async def test_force_activate_rejects_account_with_any_exhausted_quota(tmp_path: Path) -> None:
+    save_meta(
+        AccountMeta(
+            id="exhausted",
+            quota=QuotaSnapshot(weekly_percent=100, hourly_percent=0),
+        ),
+        tmp_path,
+    )
+    cfg = load_config(tmp_path)
+    cfg.api.selected_accounts = ["exhausted"]
+    save_config(cfg, tmp_path)
+    set_api_config_dir(tmp_path)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/api/accounts/exhausted/activate")
+            listed = await client.get("/api/accounts")
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "账号的 5h 和 7d 剩余额度必须都大于 0"
+        assert listed.json()[0]["schedulable"] is False
+        assert listed.json()[0]["is_active"] is False
+    finally:
+        set_api_config_dir(get_config_dir())
 
 
 def test_cockpit_status_model() -> None:

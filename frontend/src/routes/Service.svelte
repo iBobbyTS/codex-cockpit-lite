@@ -223,20 +223,7 @@
         />
         额度用完后自动切换到下一个账号
       </label>
-      {#if config.api.auto_switch.enabled}
-        <div class="form-row" style="margin-top: 10px;">
-          <label>
-            额度阈值 (%):
-            <input
-              type="number"
-              min="0"
-              max="100"
-              bind:value={config.api.auto_switch.quota_threshold_percent}
-              onchange={saveAutoSwitch}
-            />
-          </label>
-        </div>
-      {/if}
+      <p class="config-hint">任一额度消耗至 100% 后切换，5h 和 7d 均有剩余才会参与调度。</p>
     </div>
   {/if}
 
@@ -356,16 +343,10 @@
     font-size: 14px;
     cursor: pointer;
   }
-  .form-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-  .form-row label {
-    font-size: 14px;
-  }
-  .form-row input {
-    width: 80px;
+  .config-hint {
+    margin: 10px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
   }
 
   .log-list {

@@ -26,6 +26,7 @@ from .models import (
     AppConfig,
     AuthMode,
 )
+from .proxy import activate_account, get_active_account, is_account_schedulable
 from .quota import refresh_quota as py_refresh_quota
 from .quota import refresh_subscription as py_refresh_subscription
 
@@ -115,9 +116,53 @@ async def get_accounts():
     metas = list_account_metas(_cd())
     cfg = load_config(_cd())
     selected = set(cfg.api.selected_accounts)
+    positions = {account_id: index for index, account_id in enumerate(cfg.api.selected_accounts)}
+    metas.sort(key=lambda meta: (positions.get(meta.id, len(positions)), meta.id))
+    active = get_active_account(_cd())
     for m in metas:
         m.enabled = m.id in selected
-    return [m.model_dump() for m in metas]
+    return [
+        {
+            **meta.model_dump(),
+            "schedulable": meta.id in selected and is_account_schedulable(meta),
+            "is_active": active is not None and meta.id == active["id"],
+        }
+        for meta in metas
+    ]
+
+
+@router.put("/accounts/order")
+async def reorder_accounts(body: dict):
+    account_ids = body.get("account_ids")
+    if not isinstance(account_ids, list) or not all(
+        isinstance(account_id, str) for account_id in account_ids
+    ):
+        raise HTTPException(400, "账号顺序格式无效")
+    if len(account_ids) != len(set(account_ids)):
+        raise HTTPException(400, "账号顺序不能包含重复账号")
+
+    cfg = load_config(_cd())
+    if set(account_ids) != set(cfg.api.selected_accounts):
+        raise HTTPException(409, "账号列表已变化 请刷新后重试")
+    cfg.api.selected_accounts = account_ids
+    save_config(cfg, _cd())
+    return {"ok": True, "selected_accounts": account_ids}
+
+
+@router.post("/accounts/{account_id}/activate")
+async def force_activate_account(account_id: str):
+    meta = load_meta(account_id, _cd())
+    if meta is None:
+        raise HTTPException(404, f"账号 {account_id} 不存在")
+    cfg = load_config(_cd())
+    if account_id not in cfg.api.selected_accounts:
+        raise HTTPException(400, "该账号尚未启用")
+    if not is_account_schedulable(meta):
+        raise HTTPException(400, "账号的 5h 和 7d 剩余额度必须都大于 0")
+    active = activate_account(account_id, _cd())
+    if active is None:
+        raise HTTPException(409, "账号状态已变化 请刷新后重试")
+    return {"ok": True, "active_account_id": account_id}
 
 
 @router.post("/accounts/import")

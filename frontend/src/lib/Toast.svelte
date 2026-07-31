@@ -40,6 +40,9 @@
   .toast.success {
     background: var(--success);
   }
+  .toast.info {
+    background: var(--accent);
+  }
   .toast-close {
     padding: 0 2px;
     border: none;

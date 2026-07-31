@@ -169,7 +169,6 @@ def main() -> None:
                     "auto_switch": {
                         "enabled": True,
                         "strategy": "sequential",
-                        "quota_threshold_percent": 95,
                     },
                 },
             }

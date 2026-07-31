@@ -411,3 +411,134 @@ test('多个账号的刷新状态彼此独立', async () => {
     expect(screen.queryByRole('status', { name: '正在刷新 second@example.com' })).toBeNull(),
   );
 });
+
+test('显示当前调度账号，只有两个额度都大于零的账号可以强制切换', async () => {
+  const active = account({
+    is_active: true,
+    schedulable: true,
+    quota: {
+      weekly_percent: 80,
+      hourly_percent: 70,
+      weekly_resets_at: null,
+      hourly_resets_at: null,
+      queried_at: 1,
+    },
+  });
+  const available = account({
+    id: 'account-2',
+    name: 'Available',
+    email: 'available@example.com',
+    is_active: false,
+    schedulable: true,
+    quota: {
+      weekly_percent: 60,
+      hourly_percent: 50,
+      weekly_resets_at: null,
+      hourly_resets_at: null,
+      queried_at: 1,
+    },
+  });
+  const exhausted = account({
+    id: 'account-3',
+    name: 'Exhausted',
+    email: 'exhausted@example.com',
+    is_active: false,
+    schedulable: false,
+    quota: {
+      weekly_percent: 100,
+      hourly_percent: 0,
+      weekly_resets_at: null,
+      hourly_resets_at: null,
+      queried_at: 1,
+    },
+  });
+  const apiClient = vi.fn((method, path) => {
+    if (method === 'GET' && path === '/api/config') {
+      return Promise.resolve(config(['account-1', 'account-2', 'account-3']));
+    }
+    if (method === 'GET' && path === '/api/accounts') {
+      return Promise.resolve([active, available, exhausted]);
+    }
+    if (method === 'POST' && path === '/api/accounts/account-2/activate') {
+      return Promise.resolve({ ok: true, active_account_id: 'account-2' });
+    }
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+
+  render(Accounts, { apiClient, pollIntervalMs: 0 });
+  const activeCard = (await screen.findByText('test@example.com')).closest('.account-card');
+  const availableCard = screen.getByText('available@example.com').closest('.account-card');
+  const exhaustedCard = screen.getByText('exhausted@example.com').closest('.account-card');
+
+  expect(within(activeCard).getByText('当前调度')).toBeTruthy();
+  const activeSwitch = within(activeCard).getByRole('button', { name: '切换' });
+  const availableSwitch = within(availableCard).getByRole('button', { name: '切换' });
+  const exhaustedSwitch = within(exhaustedCard).getByRole('button', { name: '切换' });
+  expect(activeSwitch.getAttribute('aria-disabled')).toBe('true');
+  expect(activeSwitch.classList.contains('unavailable')).toBe(true);
+  expect(availableSwitch.getAttribute('aria-disabled')).toBe('false');
+  expect(exhaustedSwitch.getAttribute('aria-disabled')).toBe('true');
+  expect(exhaustedSwitch.classList.contains('unavailable')).toBe(true);
+
+  await fireEvent.click(activeSwitch);
+  expect(await screen.findByText('已经在调度此账号')).toBeTruthy();
+  expect(apiClient).not.toHaveBeenCalledWith('POST', '/api/accounts/account-1/activate');
+
+  await fireEvent.click(exhaustedSwitch);
+  expect(await screen.findByText('当前账号不可调度')).toBeTruthy();
+  expect(apiClient).not.toHaveBeenCalledWith('POST', '/api/accounts/account-3/activate');
+
+  await fireEvent.click(availableSwitch);
+
+  expect(within(availableCard).getByText('当前调度')).toBeTruthy();
+  expect(within(activeCard).queryByText('当前调度')).toBeNull();
+});
+
+test('拖动启用账号后立即保存新的调度顺序', async () => {
+  const first = account({
+    quota: { weekly_percent: 80, hourly_percent: 70, queried_at: 1 },
+  });
+  const second = account({
+    id: 'account-2',
+    name: 'Second',
+    email: 'second@example.com',
+    quota: { weekly_percent: 60, hourly_percent: 50, queried_at: 1 },
+  });
+  const apiClient = vi.fn((method, path, body) => {
+    if (method === 'GET' && path === '/api/config') {
+      return Promise.resolve(config(['account-1', 'account-2']));
+    }
+    if (method === 'GET' && path === '/api/accounts') return Promise.resolve([first, second]);
+    if (method === 'PUT' && path === '/api/accounts/order') {
+      return Promise.resolve({ ok: true, selected_accounts: body.account_ids });
+    }
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+  const dataTransfer = {
+    effectAllowed: '',
+    dropEffect: '',
+    setData: vi.fn(),
+    getData: vi.fn(() => 'account-2'),
+  };
+
+  render(Accounts, { apiClient, pollIntervalMs: 0 });
+  await screen.findByText('test@example.com');
+  const secondHandle = screen.getByRole('button', {
+    name: '拖动调整 Second 的调度顺序',
+  });
+  const firstCard = screen.getByText('test@example.com').closest('.account-card');
+
+  await fireEvent.dragStart(secondHandle, { dataTransfer });
+  await fireEvent.dragOver(firstCard, { dataTransfer });
+  await fireEvent.drop(firstCard, { dataTransfer });
+
+  await waitFor(() => {
+    expect(apiClient).toHaveBeenCalledWith('PUT', '/api/accounts/order', {
+      account_ids: ['account-2', 'account-1'],
+    });
+  });
+  expect(screen.getAllByText(/@example\.com$/).map((node) => node.textContent)).toEqual([
+    'second@example.com',
+    'test@example.com',
+  ]);
+});

@@ -16,7 +16,6 @@ function config() {
       auto_switch: {
         enabled: true,
         strategy: 'sequential',
-        quota_threshold_percent: 95,
       },
     },
   };

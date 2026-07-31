@@ -118,7 +118,7 @@ async def get_status() -> CockpitStatus:
         uptime_seconds=time.time() - _start_time,
         actual_port=_actual_port,
         service_url=build_service_url(_bind_host, _actual_port),
-        active_account_index=get_active_index(),
+        active_account_index=get_active_index(_config_dir),
         active_account_id=active["id"] if active else "",
         active_account_email=active["email"] if active else "",
         total_requests=get_request_count(),

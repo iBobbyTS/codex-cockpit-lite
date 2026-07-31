@@ -43,7 +43,11 @@ def load_config(config_dir: Path | None = None) -> AppConfig:
         return cfg
     try:
         raw = json.loads(path.read_text())
-        return AppConfig(**raw)
+        config = AppConfig(**raw)
+        auto_switch = (raw.get("api") or {}).get("auto_switch") or {}
+        if isinstance(auto_switch, dict) and "quota_threshold_percent" in auto_switch:
+            save_config(config, config_dir)
+        return config
     except (OSError, json.JSONDecodeError, ValidationError) as error:
         logger.warning("Failed to parse config.json, using defaults: %s", error)
         return AppConfig()

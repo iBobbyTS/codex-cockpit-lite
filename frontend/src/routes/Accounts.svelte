@@ -21,6 +21,9 @@
   function dismissError() {
     errorMsg = '';
   }
+  function dismissNotice() {
+    noticeMsg = '';
+  }
   let importJson = $state('');
   let importName = $state('');
   let editingAccountId = $state(null);
@@ -28,7 +31,10 @@
   let displayNameInput = $state(null);
   let savingDisplayName = $state(false);
   let errorMsg = $state('');
+  let noticeMsg = $state('');
   let nowMs = $state(Date.now());
+  let draggedAccountId = $state(null);
+  let savingOrder = $state(false);
   const refreshingIds = new SvelteSet();
 
   async function refreshAll() {
@@ -81,8 +87,22 @@
     }
   }
 
+  function hasRemainingQuota(account) {
+    return (account.quota?.weekly_percent ?? 0) > 0 && (account.quota?.hourly_percent ?? 0) > 0;
+  }
+
   function replaceAccount(updated) {
-    accounts = (accounts ?? []).map((account) => (account.id === updated.id ? updated : account));
+    const selected = selectedIds().has(updated.id);
+    accounts = (accounts ?? []).map((account) =>
+      account.id === updated.id
+        ? {
+            ...account,
+            ...updated,
+            schedulable: selected && hasRemainingQuota(updated),
+            is_active: account.is_active && selected && hasRemainingQuota(updated),
+          }
+        : account,
+    );
   }
 
   function automaticAccountName(account) {
@@ -259,6 +279,91 @@
     }
   }
 
+  async function activateAccount(accountId) {
+    errorMsg = '';
+    try {
+      await apiClient('POST', '/api/accounts/' + accountId + '/activate');
+      accounts = (accounts ?? []).map((account) => ({
+        ...account,
+        is_active: account.id === accountId,
+      }));
+    } catch (e) {
+      errorMsg = '切换账号失败: ' + String(e);
+      await refreshAll();
+    }
+  }
+
+  function requestAccountActivation(account, schedulable) {
+    noticeMsg = '';
+    if (account.is_active) {
+      noticeMsg = '已经在调度此账号';
+      return;
+    }
+    if (!schedulable) {
+      noticeMsg = '当前账号不可调度';
+      return;
+    }
+    void activateAccount(account.id);
+  }
+
+  function startAccountDrag(event, accountId, enabled) {
+    if (!enabled || savingOrder) {
+      event.preventDefault();
+      return;
+    }
+    draggedAccountId = accountId;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', accountId);
+  }
+
+  function allowAccountDrop(event, targetId, enabled) {
+    if (enabled && draggedAccountId && draggedAccountId !== targetId) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }
+
+  async function dropAccount(event, targetId, enabled) {
+    event.preventDefault();
+    const sourceId = draggedAccountId || event.dataTransfer.getData('text/plain');
+    draggedAccountId = null;
+    if (!enabled || !sourceId || sourceId === targetId || savingOrder || !config) return;
+
+    const currentOrder = [...config.api.selected_accounts];
+    const sourceIndex = currentOrder.indexOf(sourceId);
+    const targetIndex = currentOrder.indexOf(targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+
+    const nextOrder = [...currentOrder];
+    nextOrder.splice(sourceIndex, 1);
+    nextOrder.splice(targetIndex, 0, sourceId);
+    const positions = new Map(nextOrder.map((id, index) => [id, index]));
+    const previousAccounts = accounts;
+    const previousConfig = config;
+    config = {
+      ...config,
+      api: { ...config.api, selected_accounts: nextOrder },
+    };
+    accounts = [...(accounts ?? [])].sort((left, right) => {
+      const leftPosition = positions.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+      const rightPosition = positions.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+      return leftPosition - rightPosition;
+    });
+
+    savingOrder = true;
+    errorMsg = '';
+    try {
+      await apiClient('PUT', '/api/accounts/order', { account_ids: nextOrder });
+    } catch (e) {
+      config = previousConfig;
+      accounts = previousAccounts;
+      errorMsg = '保存账号顺序失败: ' + String(e);
+      await refreshAll();
+    } finally {
+      savingOrder = false;
+    }
+  }
+
   function selectedIds() {
     return new Set(config?.api?.selected_accounts || []);
   }
@@ -332,6 +437,10 @@
     <Toast message={errorMsg} tone="error" onDismiss={dismissError} closeLabel="关闭错误提示" />
   {/if}
 
+  {#if noticeMsg}
+    <Toast message={noticeMsg} tone="info" onDismiss={dismissNotice} closeLabel="关闭切换提示" />
+  {/if}
+
   {#if duplicate}
     <div class="modal-layer">
       <button class="modal-backdrop" type="button" aria-label="取消覆盖" onclick={cancelDuplicate}
@@ -365,7 +474,7 @@
     </div>
   {/if}
 
-  <div class="account-list" aria-busy={initialLoading}>
+  <div class="account-list" role="list" aria-busy={initialLoading}>
     {#if initialLoading}
       <div class="loading-state" role="status" aria-live="polite">
         <span>正在读取账号…</span>
@@ -385,8 +494,27 @@
     {:else if accounts?.length}
       {#each accounts as account (account.id)}
         {@const sel = selectedIds().has(account.id)}
+        {@const schedulable = sel && hasRemainingQuota(account)}
         {@const plan = getCodexPlanPresentation(account.plan_type)}
-        <div class="card account-card">
+        <div
+          class="card account-card"
+          class:active-account={account.is_active}
+          class:dragging={draggedAccountId === account.id}
+          role="listitem"
+          ondragover={(event) => allowAccountDrop(event, account.id, sel)}
+          ondrop={(event) => dropAccount(event, account.id, sel)}
+        >
+          <button
+            class="drag-handle"
+            draggable={sel && !savingOrder}
+            disabled={!sel || savingOrder}
+            aria-label="拖动调整 {accountTitle(account)} 的调度顺序"
+            title={sel ? '拖动调整调度顺序' : '启用账号后可调整调度顺序'}
+            ondragstart={(event) => startAccountDrag(event, account.id, sel)}
+            ondragend={() => (draggedAccountId = null)}
+          >
+            ⠿
+          </button>
           <div class="account-main">
             <div class="account-info">
               {#if editingAccountId === account.id}
@@ -423,6 +551,9 @@
                 {/if}
                 {#if account.team_name}
                   <span class="team">{account.team_name}</span>
+                {/if}
+                {#if account.is_active}
+                  <span class="active-indicator">当前调度</span>
                 {/if}
               </div>
             </div>
@@ -467,6 +598,20 @@
             </div>
           </div>
           <div class="account-actions">
+            <button
+              class:unavailable={!schedulable || account.is_active}
+              aria-disabled={!schedulable || account.is_active}
+              onclick={() => requestAccountActivation(account, schedulable)}
+              title={!sel
+                ? '请先启用该账号'
+                : !schedulable
+                  ? '5h 和 7d 剩余额度必须都大于 0'
+                  : account.is_active
+                    ? '当前正在调度此账号'
+                    : '从此账号开始循环调度'}
+            >
+              切换
+            </button>
             <button
               onclick={() => refreshAccount(account.id)}
               disabled={refreshingIds.has(account.id)}
@@ -616,9 +761,38 @@
     justify-content: space-between;
     align-items: center;
     gap: 16px;
+    transition:
+      border-color 0.15s ease,
+      opacity 0.15s ease;
+  }
+  .account-card.active-account {
+    border-color: var(--accent);
+  }
+  .account-card.dragging {
+    opacity: 0.55;
+  }
+  .drag-handle {
+    width: 20px;
+    min-width: 20px;
+    padding: 4px 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: grab;
+  }
+  .drag-handle:hover:not(:disabled) {
+    background: transparent;
+    color: var(--text);
+  }
+  .drag-handle:active:not(:disabled) {
+    cursor: grabbing;
+  }
+  .drag-handle:disabled {
+    opacity: 0.3;
   }
   .account-main {
     flex: 1;
+    min-width: 0;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -662,6 +836,14 @@
   .team {
     font-size: 12px;
     color: var(--text-muted);
+  }
+  .active-indicator {
+    padding: 1px 6px;
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    border-radius: 999px;
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 600;
   }
 
   .account-quota {
@@ -728,9 +910,19 @@
   }
 
   .account-actions {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(2, 64px);
     gap: 6px;
     flex-shrink: 0;
+    justify-content: end;
+    margin-left: auto;
+  }
+  .account-actions button {
+    width: 64px;
+  }
+  .account-actions button.unavailable {
+    cursor: not-allowed;
+    opacity: 0.5;
   }
   .empty {
     color: var(--text-muted);
