@@ -5,13 +5,14 @@ use std::path::PathBuf;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager, RunEvent};
+use tauri::{AppHandle, ExitRequestApi, Manager, RunEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 const BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKEND_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 const BACKEND_SHUTDOWN_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+const BACKEND_FINAL_SHUTDOWN_REQUEST_TIMEOUT: Duration = Duration::from_millis(250);
 const CONTROL_HEADER: &str = "X-Codex-Cockpit-Control";
 const STDERR_LINES: usize = 20;
 
@@ -23,13 +24,22 @@ struct BackendInner {
     child: Option<CommandChild>,
     terminated: bool,
     stopping: bool,
+    exit_cleanup_started: bool,
+    exit_cleanup_finished: bool,
     stderr_tail: VecDeque<String>,
 }
 
 #[derive(Default)]
 struct BackendState {
     inner: Mutex<BackendInner>,
-    terminated: Condvar,
+    changed: Condvar,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ExitAction {
+    AllowExit,
+    StartCleanup,
+    WaitForCleanup,
 }
 
 fn config_dir() -> PathBuf {
@@ -82,6 +92,7 @@ fn set_start_error(app: &AppHandle, message: String) {
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     inner.error = Some(message);
+    state.changed.notify_all();
 }
 
 async fn start_backend(app: AppHandle) {
@@ -101,18 +112,36 @@ async fn start_backend(app: AppHandle) {
         }
     };
 
-    {
+    let mut spawned_child = Some(child);
+    let terminate_after_spawn = {
         let state = app.state::<BackendState>();
         let mut inner = state
             .inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        inner.child = Some(child);
-        inner.port = None;
-        inner.control_token = None;
-        inner.terminated = false;
-        inner.stopping = false;
-        inner.error = None;
+        if inner.exit_cleanup_finished {
+            true
+        } else {
+            inner.child = spawned_child.take();
+            inner.port = None;
+            inner.control_token = None;
+            inner.terminated = false;
+            inner.error = None;
+            state.changed.notify_all();
+            false
+        }
+    };
+
+    if terminate_after_spawn {
+        log_line("[cockpit] App exited before backend startup completed; terminating sidecar");
+        if let Err(error) = terminate_exact_child(
+            spawned_child.expect("late sidecar child must remain available for termination"),
+        ) {
+            log_line(&format!(
+                "[cockpit] Failed to terminate late backend sidecar: {error}"
+            ));
+        }
+        return;
     }
 
     while let Some(event) = events.recv().await {
@@ -126,6 +155,7 @@ async fn start_backend(app: AppHandle) {
                             .lock()
                             .unwrap_or_else(|poison| poison.into_inner());
                         inner.control_token = Some(token);
+                        state.changed.notify_all();
                     } else if let Some(port) = parse_port_line(line.trim()) {
                         let state = app.state::<BackendState>();
                         let mut inner = state
@@ -134,6 +164,7 @@ async fn start_backend(app: AppHandle) {
                             .unwrap_or_else(|poison| poison.into_inner());
                         inner.port = Some(port);
                         inner.error = None;
+                        state.changed.notify_all();
                         log_line(&format!("[cockpit] Backend ready on port {port}"));
                     }
                 }
@@ -179,17 +210,21 @@ async fn start_backend(app: AppHandle) {
                     inner.error = Some(message.clone());
                     log_line(&format!("[cockpit] {message}"));
                 }
-                state.terminated.notify_all();
+                state.changed.notify_all();
             }
             _ => {}
         }
     }
 }
 
-fn request_shutdown(port: u16, control_token: &str) -> Result<(), String> {
+fn request_shutdown_with_timeout(
+    port: u16,
+    control_token: &str,
+    timeout: Duration,
+) -> Result<(), String> {
     let agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
-        .timeout_global(Some(BACKEND_SHUTDOWN_REQUEST_TIMEOUT))
+        .timeout_global(Some(timeout))
         .build()
         .new_agent();
     let url = format!("http://127.0.0.1:{port}/api/cockpit/shutdown");
@@ -205,6 +240,10 @@ fn request_shutdown(port: u16, control_token: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn request_shutdown(port: u16, control_token: &str) -> Result<(), String> {
+    request_shutdown_with_timeout(port, control_token, BACKEND_SHUTDOWN_REQUEST_TIMEOUT)
 }
 
 #[cfg(unix)]
@@ -225,6 +264,33 @@ fn terminate_exact_child(child: CommandChild) -> Result<(), String> {
     child.kill().map_err(|error| error.to_string())
 }
 
+fn prepare_app_exit(state: &BackendState) -> ExitAction {
+    let mut inner = state
+        .inner
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if inner.exit_cleanup_finished
+        || inner.terminated
+        || (inner.child.is_none() && inner.error.is_some())
+    {
+        ExitAction::AllowExit
+    } else if inner.exit_cleanup_started {
+        ExitAction::WaitForCleanup
+    } else {
+        inner.exit_cleanup_started = true;
+        ExitAction::StartCleanup
+    }
+}
+
+fn finish_exit_cleanup(state: &BackendState) {
+    let mut inner = state
+        .inner
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    inner.exit_cleanup_finished = true;
+    state.changed.notify_all();
+}
+
 fn stop_backend(app: &AppHandle) {
     let state = app.state::<BackendState>();
     let shutdown_target = {
@@ -232,42 +298,152 @@ fn stop_backend(app: &AppHandle) {
             .inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if inner.stopping || inner.child.is_none() {
+        if inner.stopping {
             return;
         }
         inner.stopping = true;
-        inner.port.zip(inner.control_token.clone())
+
+        let deadline = Instant::now() + BACKEND_STOP_TIMEOUT;
+        loop {
+            if inner.terminated || (inner.child.is_none() && inner.error.is_some()) {
+                inner.exit_cleanup_finished = true;
+                state.changed.notify_all();
+                return;
+            }
+            if inner.child.is_some() {
+                if let Some(target) = inner.port.zip(inner.control_token.clone()) {
+                    break Some(target);
+                }
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                break None;
+            }
+            let (next, _) = state
+                .changed
+                .wait_timeout(inner, deadline.saturating_duration_since(now))
+                .unwrap_or_else(|poison| poison.into_inner());
+            inner = next;
+        }
     };
 
     log_line("[cockpit] Stopping backend sidecar");
-    if let Some((port, control_token)) = shutdown_target {
-        if let Err(error) = request_shutdown(port, &control_token) {
+    if let Some((port, control_token)) = &shutdown_target {
+        if let Err(error) = request_shutdown(*port, control_token) {
             log_line(&format!("[cockpit] {error}"));
         }
     } else {
         log_line("[cockpit] Backend control protocol was not ready before shutdown");
     }
 
-    let inner = state
-        .inner
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    let (mut inner, _) = state
-        .terminated
-        .wait_timeout_while(inner, BACKEND_STOP_TIMEOUT, |value| !value.terminated)
-        .unwrap_or_else(|poison| poison.into_inner());
-    if inner.terminated {
-        log_line("[cockpit] Backend sidecar stopped gracefully");
-        return;
+    if shutdown_target.is_some() {
+        let inner = state
+            .inner
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let (inner, _) = state
+            .changed
+            .wait_timeout_while(inner, BACKEND_STOP_TIMEOUT, |value| !value.terminated)
+            .unwrap_or_else(|poison| poison.into_inner());
+        if inner.terminated {
+            drop(inner);
+            finish_exit_cleanup(&state);
+            log_line("[cockpit] Backend sidecar stopped gracefully");
+            return;
+        }
     }
 
-    let child = inner.child.take();
-    drop(inner);
+    let child = state
+        .inner
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .child
+        .take();
     if let Some(child) = child {
         log_line("[cockpit] Backend graceful shutdown timed out; terminating exact sidecar PID");
         if let Err(error) = terminate_exact_child(child) {
             log_line(&format!(
                 "[cockpit] Failed to terminate backend sidecar: {error}"
+            ));
+        }
+    }
+    finish_exit_cleanup(&state);
+}
+
+fn handle_exit_requested(app: &AppHandle, code: Option<i32>, api: &ExitRequestApi) {
+    let state = app.state::<BackendState>();
+    match prepare_app_exit(&state) {
+        ExitAction::AllowExit => {}
+        ExitAction::WaitForCleanup => api.prevent_exit(),
+        ExitAction::StartCleanup => {
+            api.prevent_exit();
+            for window in app.webview_windows().into_values() {
+                if let Err(error) = window.hide() {
+                    log_line(&format!(
+                        "[cockpit] Failed to hide window during exit: {error}"
+                    ));
+                }
+            }
+
+            log_line("[cockpit] App exit requested; stopping backend in background");
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let worker_handle = app_handle.clone();
+                if let Err(error) =
+                    tauri::async_runtime::spawn_blocking(move || stop_backend(&worker_handle)).await
+                {
+                    log_line(&format!("[cockpit] Backend shutdown task failed: {error}"));
+                    let state = app_handle.state::<BackendState>();
+                    finish_exit_cleanup(&state);
+                }
+                log_line("[cockpit] Backend cleanup finished; exiting app");
+                app_handle.exit(code.unwrap_or(0));
+            });
+        }
+    }
+}
+
+fn initiate_final_backend_shutdown(app: &AppHandle) {
+    let state = app.state::<BackendState>();
+    let shutdown_target = {
+        let mut inner = state
+            .inner
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if inner.terminated || (inner.child.is_none() && inner.error.is_some()) {
+            return;
+        }
+        inner.stopping = true;
+        inner.exit_cleanup_started = true;
+        inner.exit_cleanup_finished = true;
+        inner.port.zip(inner.control_token.clone())
+    };
+
+    log_line("[cockpit] Final app exit; initiating backend shutdown without waiting");
+    if let Some((port, control_token)) = shutdown_target {
+        if request_shutdown_with_timeout(
+            port,
+            &control_token,
+            BACKEND_FINAL_SHUTDOWN_REQUEST_TIMEOUT,
+        )
+        .is_ok()
+        {
+            log_line("[cockpit] Backend graceful shutdown initiated during final app exit");
+            return;
+        }
+    }
+
+    let child = state
+        .inner
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .child
+        .take();
+    if let Some(child) = child {
+        log_line("[cockpit] Final graceful shutdown unavailable; terminating exact sidecar PID");
+        if let Err(error) = terminate_exact_child(child) {
+            log_line(&format!(
+                "[cockpit] Failed final sidecar termination: {error}"
             ));
         }
     }
@@ -378,18 +554,15 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![api_call])
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
-                stop_backend(window.app_handle());
-            }
-        })
         .build(tauri::generate_context!())
         .expect("error while building Tauri application");
 
-    application.run(|app, event| {
-        if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
-            stop_backend(app);
+    application.run(|app, event| match event {
+        RunEvent::ExitRequested { code, api, .. } => {
+            handle_exit_requested(app, code, &api);
         }
+        RunEvent::Exit => initiate_final_backend_shutdown(app),
+        _ => {}
     });
 }
 
@@ -399,8 +572,8 @@ mod tests {
     use std::net::TcpListener;
 
     use super::{
-        error_detail, parse_control_line, parse_port_line, request_shutdown, wait_for_backend,
-        BackendState,
+        error_detail, parse_control_line, parse_port_line, prepare_app_exit, request_shutdown,
+        wait_for_backend, BackendState, ExitAction,
     };
 
     #[test]
@@ -482,5 +655,33 @@ mod tests {
 
         assert_eq!(request_shutdown(port, "secret-token"), Ok(()));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn first_exit_request_starts_cleanup_and_repeated_requests_wait() {
+        let state = BackendState::default();
+
+        assert_eq!(prepare_app_exit(&state), ExitAction::StartCleanup);
+        assert_eq!(prepare_app_exit(&state), ExitAction::WaitForCleanup);
+    }
+
+    #[test]
+    fn completed_cleanup_allows_tauri_to_exit() {
+        let state = BackendState::default();
+        {
+            let mut inner = state.inner.lock().unwrap();
+            inner.exit_cleanup_started = true;
+            inner.exit_cleanup_finished = true;
+        }
+
+        assert_eq!(prepare_app_exit(&state), ExitAction::AllowExit);
+    }
+
+    #[test]
+    fn failed_backend_start_allows_tauri_to_exit_without_cleanup() {
+        let state = BackendState::default();
+        state.inner.lock().unwrap().error = Some("spawn failed".to_owned());
+
+        assert_eq!(prepare_app_exit(&state), ExitAction::AllowExit);
     }
 }
