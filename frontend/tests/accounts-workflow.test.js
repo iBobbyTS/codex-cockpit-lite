@@ -18,6 +18,7 @@ function account(overrides = {}) {
   return {
     id: 'account-1',
     name: 'Test Account',
+    display_name: '',
     email: 'test@example.com',
     plan_type: '',
     subscription_expires_at: null,
@@ -216,6 +217,54 @@ test('从 ~/.codex 重复导入可取消，并可确认覆盖后复用原账号'
     expect(screen.queryByRole('status', { name: '正在刷新 test@example.com' })).toBeNull(),
   );
   expect(screen.getAllByText('test@example.com')).toHaveLength(1);
+});
+
+test('双击账号名称可编辑手动显示名称，清空后恢复自动名称', async () => {
+  let stored = account({ name: 'Automatic Team', display_name: 'My Workspace' });
+  const apiClient = vi.fn((method, path, body) => {
+    if (method === 'GET' && path === '/api/config') {
+      return Promise.resolve(config(['account-1']));
+    }
+    if (method === 'GET' && path === '/api/accounts') return Promise.resolve([stored]);
+    if (method === 'PUT' && path === '/api/accounts/account-1/display-name') {
+      stored = { ...stored, display_name: body.display_name.trim() };
+      return Promise.resolve(stored);
+    }
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+
+  render(Accounts, { apiClient, pollIntervalMs: 0 });
+  const title = await screen.findByRole('button', {
+    name: '双击编辑 My Workspace 的显示名称',
+  });
+
+  await fireEvent.dblClick(title);
+  let input = screen.getByRole('textbox', { name: '编辑 Automatic Team 的显示名称' });
+  expect(input.value).toBe('My Workspace');
+  expect(input.placeholder).toBe('Automatic Team');
+
+  await fireEvent.input(input, { target: { value: 'Renamed Workspace' } });
+  await fireEvent.blur(input);
+  expect(
+    await screen.findByRole('button', { name: '双击编辑 Renamed Workspace 的显示名称' }),
+  ).toBeTruthy();
+  expect(apiClient).toHaveBeenCalledWith('PUT', '/api/accounts/account-1/display-name', {
+    display_name: 'Renamed Workspace',
+  });
+
+  await fireEvent.dblClick(
+    screen.getByRole('button', { name: '双击编辑 Renamed Workspace 的显示名称' }),
+  );
+  input = screen.getByRole('textbox', { name: '编辑 Automatic Team 的显示名称' });
+  await fireEvent.input(input, { target: { value: '' } });
+  await fireEvent.blur(input);
+
+  expect(
+    await screen.findByRole('button', { name: '双击编辑 Automatic Team 的显示名称' }),
+  ).toBeTruthy();
+  expect(apiClient).toHaveBeenLastCalledWith('PUT', '/api/accounts/account-1/display-name', {
+    display_name: '',
+  });
 });
 
 test('手动刷新不进入导入状态，并在返回时同时更新数据和移除标记', async () => {

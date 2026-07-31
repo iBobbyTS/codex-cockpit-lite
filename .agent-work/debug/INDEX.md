@@ -12,6 +12,7 @@
 
 | file | summary |
 | --- | --- |
+| resolved/port-readiness-race.md | PORT 协议已移到 Uvicorn listener 建立后，最终 bundle 连续即时连接验证通过。 |
 | resolved/duplicate-import-empty-body.md | 空 body 的 ~/.codex 导入已视为默认选项，重复账号弹窗取消和覆盖流程均有回归测试。 |
 | resolved/startup-loading-state.md | 启动门控和账号骨架加载态已验证，避免空账号闪烁及 effect 隐式依赖回归。 |
 | resolved/account-import-refresh-state.md | 导入与每账号刷新已拆成独立生命周期，真实组件时序测试通过。 |

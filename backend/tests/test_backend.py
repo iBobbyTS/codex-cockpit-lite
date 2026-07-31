@@ -11,7 +11,9 @@ from pathlib import Path
 import httpx
 import jwt
 import pytest
+import uvicorn
 
+import codex_cockpit_lite.main as main_module
 from codex_cockpit_lite.api import get_config_dir_info, set_api_config_dir
 from codex_cockpit_lite.auth import (
     _token_expired,
@@ -85,6 +87,7 @@ def test_account_meta_roundtrip(tmp_path: Path) -> None:
     meta = AccountMeta(
         id="test-1",
         name="Test Account",
+        display_name="My Account",
         email="test@openai.com",
         auth_mode=AuthMode.OAUTH,
         plan_type="pro",
@@ -95,6 +98,7 @@ def test_account_meta_roundtrip(tmp_path: Path) -> None:
     loaded = load_meta("test-1", tmp_path)
     assert loaded is not None
     assert loaded.email == "test@openai.com"
+    assert loaded.display_name == "My Account"
     assert loaded.quota.weekly_percent == 80
 
 
@@ -178,6 +182,33 @@ def test_frontend_dist_path_when_frozen(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_port_protocol_is_announced_after_uvicorn_listener_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    async def fake_startup(
+        server: uvicorn.Server, sockets: list[socket.socket] | None = None
+    ) -> None:
+        del sockets
+        events.append("listener-ready")
+        server.started = True
+
+    def fake_print(value: str, *, flush: bool = False) -> None:
+        assert flush is True
+        events.append(value)
+
+    monkeypatch.setattr(uvicorn.Server, "startup", fake_startup)
+    monkeypatch.setattr("builtins.print", fake_print)
+    monkeypatch.setattr(main_module, "_actual_port", 18844)
+    server = main_module.CockpitServer(uvicorn.Config(app, port=18844))
+
+    await server.startup()
+
+    assert events == ["listener-ready", "PORT=18844"]
+
+
+@pytest.mark.asyncio
 async def test_refresh_missing_account_returns_404(tmp_path: Path) -> None:
     set_api_config_dir(tmp_path)
     try:
@@ -205,6 +236,59 @@ async def test_invalid_auth_mode_returns_readable_error_without_writing(tmp_path
         assert response.json()["detail"] == "Codex Cockpit Lite 只支持 ChatGPT 登录"
         accounts_dir = tmp_path / "accounts"
         assert not accounts_dir.exists() or list(accounts_dir.iterdir()) == []
+    finally:
+        set_api_config_dir(get_config_dir())
+
+
+@pytest.mark.asyncio
+async def test_account_display_name_can_be_set_and_cleared(tmp_path: Path) -> None:
+    save_meta(AccountMeta(id="account-1", name="Automatic Team"), tmp_path)
+    set_api_config_dir(tmp_path)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            renamed = await client.put(
+                "/api/accounts/account-1/display-name",
+                json={"display_name": "  My Workspace  "},
+            )
+            cleared = await client.put(
+                "/api/accounts/account-1/display-name", json={"display_name": ""}
+            )
+
+        assert renamed.status_code == 200
+        assert renamed.json()["name"] == "Automatic Team"
+        assert renamed.json()["display_name"] == "My Workspace"
+        assert cleared.status_code == 200
+        assert cleared.json()["name"] == "Automatic Team"
+        assert cleared.json()["display_name"] == ""
+        assert load_meta("account-1", tmp_path).display_name == ""
+    finally:
+        set_api_config_dir(get_config_dir())
+
+
+@pytest.mark.parametrize(
+    ("display_name", "expected_display_name"),
+    [("", ""), ("  Custom Workspace  ", "Custom Workspace")],
+)
+@pytest.mark.asyncio
+async def test_manual_import_separates_automatic_and_display_names(
+    tmp_path: Path, display_name: str, expected_display_name: str
+) -> None:
+    set_api_config_dir(tmp_path)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/accounts/import",
+                json={
+                    "auth_json": json.dumps(chatgpt_auth()),
+                    "name": display_name,
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["name"] == "test"
+        assert response.json()["display_name"] == expected_display_name
     finally:
         set_api_config_dir(get_config_dir())
 

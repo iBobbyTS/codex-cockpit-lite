@@ -75,6 +75,15 @@ async def _read_optional_json_object(req: Request) -> dict:
     return body
 
 
+def _normalize_display_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise HTTPException(400, "显示名称必须是文本")
+    display_name = value.strip()
+    if len(display_name) > 100:
+        raise HTTPException(400, "显示名称不能超过 100 个字符")
+    return display_name
+
+
 # ─── Config ───
 
 
@@ -115,7 +124,7 @@ async def get_accounts():
 async def import_account(req: Request):
     body = await req.json()
     auth_json = body.get("auth_json", "")
-    name = body.get("name", "")
+    display_name = body.get("name", "")
 
     if not auth_json.strip():
         raise HTTPException(400, "auth_json is required")
@@ -134,8 +143,7 @@ async def import_account(req: Request):
     email = ""
     if "tokens" in auth_data and "id_token" in auth_data["tokens"]:
         email = extract_email_from_id_token(auth_data["tokens"]["id_token"])
-    if not name:
-        name = email.split("@")[0] if email else "Codex Account"
+    name = email.split("@")[0] if email else "Codex Account"
 
     # Extract account_id from JWT for team-aware dedup
     chatgpt_account_id = _extract_account_id(auth_data)
@@ -153,6 +161,7 @@ async def import_account(req: Request):
     meta = AccountMeta(
         id=account_id,
         name=name,
+        display_name=_normalize_display_name(display_name),
         email=email,
         auth_mode=AuthMode("oauth"),
         account_id=chatgpt_account_id or "",
@@ -206,6 +215,7 @@ async def import_from_codex(req: Request):
     meta = AccountMeta(
         id=account_id,
         name=name,
+        display_name=existing.display_name if existing else "",
         email=email,
         auth_mode=AuthMode("oauth"),
         account_id=chatgpt_account_id or "",
@@ -217,6 +227,16 @@ async def import_from_codex(req: Request):
         cfg.api.selected_accounts.append(account_id)
         save_config(cfg, _cd())
 
+    return meta.model_dump()
+
+
+@router.put("/accounts/{account_id}/display-name")
+async def update_account_display_name(account_id: str, body: dict):
+    meta = load_meta(account_id, _cd())
+    if meta is None:
+        raise HTTPException(404, f"账号 {account_id} 不存在")
+    meta.display_name = _normalize_display_name(body.get("display_name", ""))
+    save_meta(meta, _cd())
     return meta.model_dump()
 
 

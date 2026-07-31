@@ -1,4 +1,5 @@
 <script>
+  import { tick } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { apiClient as defaultApiClient } from '../lib/apiClient.js';
   import { getCodexPlanPresentation } from '../lib/codexPlans.js';
@@ -17,6 +18,10 @@
   let unsupportedModal = $state(false);
   let importJson = $state('');
   let importName = $state('');
+  let editingAccountId = $state(null);
+  let editingDisplayName = $state('');
+  let displayNameInput = $state(null);
+  let savingDisplayName = $state(false);
   let errorMsg = $state('');
   let nowMs = $state(Date.now());
   const refreshingIds = new SvelteSet();
@@ -75,6 +80,53 @@
     accounts = (accounts ?? []).map((account) => (account.id === updated.id ? updated : account));
   }
 
+  function automaticAccountName(account) {
+    return account.name || account.email?.split('@')[0] || account.id.slice(0, 8);
+  }
+
+  function accountTitle(account) {
+    return account.display_name || automaticAccountName(account);
+  }
+
+  async function startEditingDisplayName(account) {
+    editingAccountId = account.id;
+    editingDisplayName = account.display_name || '';
+    await tick();
+    displayNameInput?.focus();
+    displayNameInput?.select();
+  }
+
+  function cancelEditingDisplayName() {
+    editingAccountId = null;
+    editingDisplayName = '';
+  }
+
+  async function saveDisplayName(accountId) {
+    if (editingAccountId !== accountId || savingDisplayName) return;
+    savingDisplayName = true;
+    try {
+      const updated = await apiClient('PUT', '/api/accounts/' + accountId + '/display-name', {
+        display_name: editingDisplayName,
+      });
+      replaceAccount(updated);
+      cancelEditingDisplayName();
+    } catch (e) {
+      errorMsg = '修改显示名称失败: ' + String(e);
+    } finally {
+      savingDisplayName = false;
+    }
+  }
+
+  function handleDisplayNameKeydown(event) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      event.currentTarget.blur();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelEditingDisplayName();
+    }
+  }
+
   async function refreshAccount(accountId) {
     if (refreshingIds.has(accountId)) return;
     refreshingIds.add(accountId);
@@ -115,7 +167,7 @@
     errorMsg = '';
     const pending = {
       json: importJson.trim(),
-      name: importName.trim() || 'Codex Account',
+      name: importName.trim(),
     };
     if (!pending.json) {
       errorMsg = '导入失败: 请粘贴 auth.json 内容';
@@ -334,7 +386,31 @@
         <div class="card account-card">
           <div class="account-main">
             <div class="account-info">
-              <h3>{account.name || account.email || account.id.slice(0, 8)}</h3>
+              {#if editingAccountId === account.id}
+                <input
+                  class="account-name-input"
+                  bind:this={displayNameInput}
+                  bind:value={editingDisplayName}
+                  placeholder={automaticAccountName(account)}
+                  maxlength="100"
+                  aria-label="编辑 {automaticAccountName(account)} 的显示名称"
+                  disabled={savingDisplayName}
+                  onblur={() => saveDisplayName(account.id)}
+                  onkeydown={handleDisplayNameKeydown}
+                />
+              {:else}
+                <button
+                  class="account-name"
+                  title="双击编辑显示名称"
+                  aria-label="双击编辑 {accountTitle(account)} 的显示名称"
+                  onclick={(event) => {
+                    if (event.detail === 0) void startEditingDisplayName(account);
+                  }}
+                  ondblclick={() => startEditingDisplayName(account)}
+                >
+                  {accountTitle(account)}
+                </button>
+              {/if}
               <span class="email">{account.email}</span>
               <div class="tags">
                 {#if account.plan_type}
@@ -352,7 +428,7 @@
                 <span
                   class="refresh-indicator"
                   role="status"
-                  aria-label="正在刷新 {account.email || account.name}"
+                  aria-label="正在刷新 {account.email || accountTitle(account)}"
                 >
                   <span class="refresh-spin">⟳</span>
                 </span>
@@ -391,7 +467,7 @@
             <button
               onclick={() => refreshAccount(account.id)}
               disabled={refreshingIds.has(account.id)}
-              aria-label="刷新 {account.email || account.name}"
+              aria-label="刷新 {account.email || accountTitle(account)}"
             >
               刷新
             </button>
@@ -545,9 +621,29 @@
     align-items: center;
     gap: 16px;
   }
-  .account-info h3 {
+  .account-name {
+    display: block;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
     font-size: 15px;
+    font-weight: 700;
+    line-height: normal;
+    text-align: left;
     margin-bottom: 2px;
+  }
+  .account-name:hover {
+    background: transparent;
+  }
+  .account-name-input {
+    width: 220px;
+    height: 24px;
+    padding: 2px 6px;
+    margin: -3px 0 1px -7px;
+    font-size: 15px;
+    font-weight: 700;
   }
   .email {
     font-size: 12px;

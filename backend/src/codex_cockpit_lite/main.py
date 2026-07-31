@@ -36,8 +36,6 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     set_config_dir(_config_dir)
     set_api_config_dir(_config_dir)
     logger.info("Codex Cockpit Lite started, config dir: %s", _config_dir)
-    if _actual_port > 0:
-        print(f"PORT={_actual_port}", flush=True)
 
     refresh_task = asyncio.create_task(_periodic_quota_refresh())
     application.state.quota_refresh_task = refresh_task
@@ -50,6 +48,16 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Codex Cockpit Lite", version="0.1.0", lifespan=lifespan)
+
+
+class CockpitServer(uvicorn.Server):
+    """Announce readiness only after Uvicorn has created its listener."""
+
+    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+        await super().startup(sockets=sockets)
+        if self.started and _actual_port > 0:
+            print(f"PORT={_actual_port}", flush=True)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -235,7 +243,10 @@ def main():
         save_config(cfg, _config_dir)
 
     logger.info("Starting on %s:%d, config dir: %s", host, actual_port, _config_dir)
-    uvicorn.run(app, host=host, port=actual_port, log_level=args.log_level)
+    server = CockpitServer(
+        uvicorn.Config(app, host=host, port=actual_port, log_level=args.log_level)
+    )
+    server.run()
 
 
 if __name__ == "__main__":

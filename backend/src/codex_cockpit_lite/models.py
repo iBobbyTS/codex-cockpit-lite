@@ -50,6 +50,7 @@ class QuotaSnapshot(BaseModel):
 class AccountMeta(BaseModel):
     id: str
     name: str = ""
+    display_name: str = ""
     email: str = ""
     auth_mode: AuthMode = AuthMode.OAUTH
     plan_type: str = ""
