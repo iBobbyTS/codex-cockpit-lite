@@ -102,6 +102,12 @@ Tauri 收到 `ExitRequested` 时必须先调用 `prevent_exit()`，将令牌化�
 同步等待，否则 macOS 会显示彩色转轮。优雅关闭超时后的 fallback 只能针对保存的精确子
 进程句柄/PID，禁止按进程名扫描或 `pkill`。
 
+桌面应用采用关闭到托盘行为。macOS 红色关闭按钮、`Command-W`、Windows 关闭按钮和
+`Alt-F4` 只隐藏主窗口，不触发 `ExitRequested`，因此 bundled backend 和 API 服务会继续
+运行。左键点击菜单栏/系统托盘图标会重新显示并聚焦原窗口；右键菜单中的“退出 Codex
+Cockpit Lite”以及 `Command-Q`/`Ctrl-Q` 才会进入上述 sidecar 关闭流程。macOS bundle
+必须包含 `LSUIElement=true`，Windows 则只在窗口隐藏期间移除任务栏入口。
+
 macOS 的 Command-Q、Dock Quit 或 Apple Quit Event 可能因 Tauri 上游限制跳过
 `ExitRequested`。`RunEvent::Exit` 因此保留最长 250ms 的 localhost shutdown 发起保障，但不
 等待 sidecar；请求不可用时只向保存的精确 PyInstaller 外层 PID 发送 SIGTERM。不得在该
@@ -113,6 +119,18 @@ macOS 最终 bundle 还应直接验证 Tauri 重签后的 sidecar，防止代码
 python3 scripts/smoke_sidecar.py --binary \
   "frontend/src-tauri/target/release/bundle/macos/Codex Cockpit Lite.app/Contents/MacOS/codex-cockpit-backend"
 ```
+
+打包后的桌面生命周期还应进行实机检查：冷启动时托盘可见；关闭窗口前后记录的 sidecar
+PID 保持一致且 `/v1/cockpit/status` 继续返回成功；托盘左键能够恢复窗口；从托盘退出后
+主进程、sidecar 和监听端口均消失。macOS 额外运行：
+
+```bash
+plutil -extract LSUIElement raw \
+  "frontend/src-tauri/target/release/bundle/macos/Codex Cockpit Lite.app/Contents/Info.plist"
+```
+
+预期输出为 `true`。Windows 必须在 Windows 主机验证窗口显示时存在任务栏按钮、关闭后
+仅保留托盘，以及托盘退出后 sidecar 和端口完全释放。
 
 本地构建使用 Tauri ad-hoc 签名并关闭 hardened runtime。PyInstaller 官方说明 hardened
 runtime 需要有效的 Apple-issued identity；ad-hoc hardened runtime 会使 one-file 解压的

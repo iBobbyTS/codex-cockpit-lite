@@ -9,6 +9,9 @@ use tauri::{AppHandle, ExitRequestApi, Manager, RunEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod desktop;
+
 const BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKEND_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 const BACKEND_SHUTDOWN_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
@@ -377,6 +380,9 @@ fn handle_exit_requested(app: &AppHandle, code: Option<i32>, api: &ExitRequestAp
         ExitAction::WaitForCleanup => api.prevent_exit(),
         ExitAction::StartCleanup => {
             api.prevent_exit();
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            desktop::begin_exit(app);
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             for window in app.webview_windows().into_values() {
                 if let Err(error) = window.hide() {
                     log_line(&format!(
@@ -545,11 +551,18 @@ async fn api_call(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     log_line("[cockpit] App starting");
-    let application = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(BackendState::default())
+        .manage(BackendState::default());
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let builder = builder.on_window_event(desktop::handle_window_event);
+
+    let application = builder
         .setup(|app| {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            desktop::setup(app)?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(start_backend(handle));
             Ok(())
@@ -563,6 +576,11 @@ pub fn run() {
             handle_exit_requested(app, code, &api);
         }
         RunEvent::Exit => initiate_final_backend_shutdown(app),
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } => desktop::show_main_window(app),
         _ => {}
     });
 }
