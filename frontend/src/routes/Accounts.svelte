@@ -1,30 +1,32 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
+  import { SvelteSet } from 'svelte/reactivity';
 
-  async function api(method, path, body) {
+  async function tauriApi(method, path, body) {
     const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
     return JSON.parse(text);
   }
+
+  let { apiClient = tauriApi, pollIntervalMs = 5000 } = $props();
+
   let config = $state(null);
   let accounts = $state([]);
   let showImport = $state(false);
   let importing = $state(false);
   let deleteTarget = $state(null);
   let duplicate = $state(null);
-  $effect(() => { console.log('[refreshing]', refreshing.slice()); });
   let pendingImport = $state(null);
   let unsupportedModal = $state(false);
   let importJson = $state('');
   let importName = $state('');
   let errorMsg = $state('');
-
-  let refreshingId = $state(null);
+  const refreshingIds = new SvelteSet();
 
   async function refreshAll() {
     try {
       const [cfg, acc] = await Promise.all([
-        api('GET', '/api/config'),
-        api('GET', '/api/accounts'),
+        apiClient('GET', '/api/config'),
+        apiClient('GET', '/api/accounts'),
       ]);
       config = cfg;
       accounts = acc;
@@ -33,32 +35,97 @@
     }
   }
 
+  function showImportedAccount(imported) {
+    const current = accounts.find((account) => account.id === imported.id);
+    const next = current
+      ? {
+          ...current,
+          ...imported,
+          plan_type: imported.plan_type || current.plan_type,
+          subscription_expires_at: imported.subscription_expires_at ?? current.subscription_expires_at,
+          team_name: imported.team_name || current.team_name,
+          quota: imported.quota?.queried_at ? imported.quota : current.quota,
+        }
+      : imported;
+
+    accounts = current
+      ? accounts.map((account) => account.id === next.id ? next : account)
+      : [...accounts, next];
+
+    if (config?.api && !config.api.selected_accounts.includes(next.id)) {
+      config = {
+        ...config,
+        api: {
+          ...config.api,
+          selected_accounts: [...config.api.selected_accounts, next.id],
+        },
+      };
+    }
+  }
+
+  function replaceAccount(updated) {
+    accounts = accounts.map((account) => account.id === updated.id ? updated : account);
+  }
+
+  async function refreshAccount(accountId) {
+    if (refreshingIds.has(accountId)) return;
+    refreshingIds.add(accountId);
+
+    try {
+      const updated = await apiClient('POST', '/api/accounts/' + accountId + '/refresh');
+      replaceAccount(updated);
+    } catch (e) {
+      errorMsg = '刷新账号失败: ' + String(e);
+    } finally {
+      refreshingIds.delete(accountId);
+    }
+  }
+
+  function completeImport(result) {
+    showImportedAccount(result);
+    void refreshAccount(result.id);
+  }
+
+  function handleImportError(error, pending, prefix) {
+    const msg = String(error);
+    if (msg.includes('只支持 ChatGPT')) {
+      unsupportedModal = true;
+    } else if (msg.includes('DUPLICATE:')) {
+      duplicate = msg.split('DUPLICATE:')[1].trim();
+      pendingImport = pending;
+    } else {
+      errorMsg = prefix + msg;
+    }
+  }
+
+  function cancelDuplicate() {
+    duplicate = null;
+    pendingImport = null;
+  }
+
   async function importAccount() {
     errorMsg = '';
-    // Close panel immediately, show loading
+    const pending = {
+      json: importJson.trim(),
+      name: importName.trim() || 'Codex Account',
+    };
+    if (!pending.json) {
+      errorMsg = '导入失败: 请粘贴 auth.json 内容';
+      return;
+    }
+
     showImport = false;
-    importJson = '';
-    importName = '';
     importing = true;
     try {
-      const result = await api('POST', '/api/accounts/import', {
-        auth_json: importJson.trim() || '{}',
-        name: importName.trim() || 'Codex Account',
+      const result = await apiClient('POST', '/api/accounts/import', {
+        auth_json: pending.json,
+        name: pending.name,
       });
-      refreshingId = result.id;
-      refreshingId = result.id;
-      api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
-      await refreshAll();
-      refreshingId = null;
-      refreshingId = null;
+      importJson = '';
+      importName = '';
+      completeImport(result);
     } catch (e) {
-      const msg = String(e);
-      if (msg.includes('只支持 ChatGPT')) { unsupportedModal = true; }
-      else if (msg.includes('DUPLICATE:')) {
-        duplicate = msg.split('DUPLICATE:')[1].trim();
-        pendingImport = { json: importJson.trim() || '{}', name: importName.trim() || 'Codex Account' };
-      }
-      else { errorMsg = '导入失败: ' + msg; }
+      handleImportError(e, pending, '导入失败: ');
     } finally {
       importing = false;
     }
@@ -66,24 +133,22 @@
 
   async function overrideImport() {
     if (!pendingImport) return;
+    const pending = pendingImport;
+    cancelDuplicate();
+    errorMsg = '';
     importing = true;
     try {
-      if (pendingImport.fromCodex) {
-        await api('POST', '/api/accounts/import-from-codex', { force: true });
+      let result;
+      if (pending.fromCodex) {
+        result = await apiClient('POST', '/api/accounts/import-from-codex', { force: true });
       } else {
-        await api('POST', '/api/accounts/import', {
-          auth_json: pendingImport.json,
-          name: pendingImport.name,
+        result = await apiClient('POST', '/api/accounts/import', {
+          auth_json: pending.json,
+          name: pending.name,
           force: true,
         });
       }
-      // Refresh quota for the overwritten account
-      refreshingId = duplicate;
-      api('POST', '/api/accounts/' + duplicate + '/refresh').catch(() => {});
-      await refreshAll();
-      refreshingId = null;
-      duplicate = null;
-      pendingImport = null;
+      completeImport(result);
     } catch (e) {
       errorMsg = '覆盖导入失败: ' + String(e);
     } finally {
@@ -95,14 +160,10 @@
     errorMsg = '';
     importing = true;
     try {
-      const result = await api('POST', '/api/accounts/import-from-codex');
-      api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
-      await refreshAll();
+      const result = await apiClient('POST', '/api/accounts/import-from-codex');
+      completeImport(result);
     } catch (e) {
-      const msg = String(e);
-      if (msg.includes('只支持 ChatGPT')) { unsupportedModal = true; }
-      else if (msg.includes('DUPLICATE:')) { duplicate = msg.split('DUPLICATE:')[1].trim(); pendingImport = { fromCodex: true }; }
-      else { errorMsg = '从 ~/.codex 导入失败: ' + msg; }
+      handleImportError(e, { fromCodex: true }, '从 ~/.codex 导入失败: ');
     } finally {
       importing = false;
     }
@@ -114,7 +175,7 @@
     deleteTarget = null;
     errorMsg = '';
     try {
-      await api('DELETE', '/api/accounts/' + id);
+      await apiClient('DELETE', '/api/accounts/' + id);
       await refreshAll();
     } catch (e) {
       errorMsg = '删除失败: ' + String(e);
@@ -125,7 +186,7 @@
   async function toggleAccount(id, enabled) {
     errorMsg = '';
     try {
-      await api('PUT', '/api/accounts/' + id + '/toggle', { enabled });
+      await apiClient('PUT', '/api/accounts/' + id + '/toggle', { enabled });
       await refreshAll();
     } catch (e) {
       errorMsg = String(e);
@@ -137,9 +198,10 @@
     return new Set(config?.api?.selected_accounts || []);
   }
 
-  $effect(() => { refreshAll(); });
   $effect(() => {
-    const interval = setInterval(refreshAll, 5000);
+    refreshAll();
+    if (pollIntervalMs <= 0) return;
+    const interval = setInterval(refreshAll, pollIntervalMs);
     return () => clearInterval(interval);
   });
 </script>
@@ -148,8 +210,8 @@
   <div class="header">
     <h1>账号管理</h1>
     <div class="actions">
-      <button onclick={importOfficial}>从 ~/.codex 导入</button>
-      <button class="primary" onclick={() => showImport = !showImport}>
+      <button onclick={importOfficial} disabled={importing}>从 ~/.codex 导入</button>
+      <button class="primary" onclick={() => showImport = !showImport} disabled={importing}>
         {showImport ? '取消' : '导入 auth.json'}
       </button>
     </div>
@@ -163,7 +225,7 @@
       ></textarea>
       <div class="import-row">
         <input bind:value={importName} placeholder="显示名称（可选）" />
-        <button class="primary" onclick={importAccount}>导入</button>
+        <button class="primary" onclick={importAccount} disabled={importing}>导入</button>
       </div>
     </div>
   {/if}
@@ -190,13 +252,13 @@
   {/if}
 
   {#if duplicate}
-    <div class="modal-backdrop" onclick={() => duplicate = null}>
+    <div class="modal-backdrop" onclick={cancelDuplicate}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <h3>重复账号</h3>
         <p>该邮箱已存在账号，是否覆盖更新？覆盖将刷新凭据信息。</p>
         <div class="modal-actions">
           <button class="danger" onclick={overrideImport}>覆盖</button>
-          <button onclick={() => duplicate = null}>取消</button>
+          <button onclick={cancelDuplicate}>取消</button>
         </div>
       </div>
     </div>
@@ -234,13 +296,15 @@
             </div>
           </div>
           <div class="account-quota">
+            {#if refreshingIds.has(account.id)}
+              <span class="refresh-indicator" role="status" aria-label="正在刷新 {account.email || account.name}">
+                <span class="refresh-spin">⟳</span>
+              </span>
+            {/if}
             <div class="quota-row">
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
               </div>
-              {#if refreshingId === account.id}
-                <span class="refresh-spin">⟳</span>
-              {/if}
               <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}>{account.quota?.weekly_percent || 0}%</span>
               <span class="quota-col">5h</span>
             </div>
@@ -254,6 +318,13 @@
           </div>
         </div>
         <div class="account-actions">
+          <button
+            onclick={() => refreshAccount(account.id)}
+            disabled={refreshingIds.has(account.id)}
+            aria-label="刷新 {account.email || account.name}"
+          >
+            刷新
+          </button>
           <button
             class={sel ? 'danger' : 'primary'}
             onclick={() => toggleAccount(account.id, !sel)}
@@ -304,8 +375,8 @@
   .tags { display: flex; gap: 6px; margin-top: 4px; align-items: center; flex-wrap: wrap; }
   .team { font-size: 12px; color: var(--text-muted); }
 
-  .account-quota { display: flex; flex-direction: column; gap: 2px; }
-  .quota-row { display: flex; align-items: center; gap: 6px; }
+  .account-quota { position: relative; display: flex; flex-direction: column; gap: 2px; padding-right: 20px; }
+  .quota-row { display: grid; grid-template-columns: 80px 32px 24px; align-items: center; gap: 6px; }
   .quota-bar {
     width: 80px;
     height: 5px;
@@ -321,7 +392,8 @@
   }
   .quota-pct { font-size: 12px; font-weight: 600; width: 32px; text-align: right; }
   .quota-pct.low { color: var(--warning); }
-  .refresh-spin { font-size: 14px; color: var(--accent); animation: spin 1s linear infinite; }
+  .refresh-indicator { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
+  .refresh-spin { display: block; font-size: 14px; color: var(--accent); animation: spin 1s linear infinite; }
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   .quota-col { font-size: 10px; color: var(--text-muted); width: 24px; text-align: right; }
 
