@@ -1,251 +1,217 @@
 """Tests for Codex Cockpit Lite backend."""
 
+from __future__ import annotations
+
 import json
-import os
-import tempfile
+import socket
+import sys
+import time
 from pathlib import Path
 
+import httpx
+import jwt
 import pytest
-from models import AppConfig, ApiConfig, AccountMeta, QuotaSnapshot, AuthMode, SpeedMode
-from config import (
-    load_config, save_config, ensure_config_dir,
-    load_meta, save_meta, list_account_metas, list_selected_accounts,
+
+from codex_cockpit_lite.api import get_config_dir_info, set_api_config_dir
+from codex_cockpit_lite.auth import (
+    _token_expired,
+    parse_auth_file,
+    validate_chatgpt_auth,
 )
-from auth import parse_auth_file, get_auth_mode, _token_expired
+from codex_cockpit_lite.config import (
+    get_config_dir,
+    list_selected_accounts,
+    load_config,
+    load_meta,
+    save_config,
+    save_meta,
+)
+from codex_cockpit_lite.main import app, find_available_port, frontend_dist_path
+from codex_cockpit_lite.models import (
+    AccountMeta,
+    ApiConfig,
+    AppConfig,
+    AuthMode,
+    CockpitStatus,
+    QuotaSnapshot,
+    SpeedMode,
+)
+from codex_cockpit_lite.quota import _collect_records, _parse_timestamp
 
 
-# ─── Config tests ───
-
-def test_default_config():
-    with tempfile.TemporaryDirectory() as tmp:
-        config_dir = Path(tmp)
-        cfg = load_config(config_dir)
-        assert cfg.version == 1
-        assert cfg.api.port == 8844
-        assert cfg.api.speed == SpeedMode.STANDARD
-        assert cfg.api.selected_accounts == []
-        assert cfg.api.auto_switch.enabled is True
-
-
-def test_save_and_reload_config():
-    with tempfile.TemporaryDirectory() as tmp:
-        config_dir = Path(tmp)
-        cfg = load_config(config_dir)
-        cfg.api.port = 9999
-        cfg.api.speed = SpeedMode.FAST
-        save_config(cfg, config_dir)
-
-        reloaded = load_config(config_dir)
-        assert reloaded.api.port == 9999
-        assert reloaded.api.speed == SpeedMode.FAST
-
-
-def test_config_dir_endpoint_reports_backend_path():
-    from api import get_config_dir_info, set_api_config_dir
-    from config import get_config_dir
-
-    with tempfile.TemporaryDirectory() as tmp:
-        config_dir = Path(tmp)
-        set_api_config_dir(config_dir)
-        try:
-            result = get_config_dir_info()
-            assert result == {"path": str(config_dir)}
-        finally:
-            set_api_config_dir(get_config_dir())
-
-
-def test_account_meta_roundtrip():
-    with tempfile.TemporaryDirectory() as tmp:
-        config_dir = Path(tmp)
-        meta = AccountMeta(
-            id="test-1",
-            name="Test Account",
-            email="test@openai.com",
-            auth_mode=AuthMode.OAUTH,
-            plan_type="pro",
-            team_name="Personal",
-            quota=QuotaSnapshot(weekly_percent=80, hourly_percent=30),
-        )
-        save_meta(meta, config_dir)
-        loaded = load_meta("test-1", config_dir)
-        assert loaded is not None
-        assert loaded.id == "test-1"
-        assert loaded.email == "test@openai.com"
-        assert loaded.quota.weekly_percent == 80
-
-
-def test_list_selected_accounts():
-    with tempfile.TemporaryDirectory() as tmp:
-        config_dir = Path(tmp)
-        # Create two accounts
-        for i in range(2):
-            meta = AccountMeta(
-                id=f"acc-{i}",
-                name=f"Account {i}",
-                email=f"user{i}@openai.com",
-                auth_mode=AuthMode.OAUTH,
-            )
-            save_meta(meta, config_dir)
-
-        # Add only first to selected
-        cfg = load_config(config_dir)
-        cfg.api.selected_accounts = ["acc-0"]
-        save_config(cfg, config_dir)
-
-        selected = list_selected_accounts(config_dir)
-        assert len(selected) == 1
-        assert selected[0].id == "acc-0"
-
-
-# ─── Auth tests ───
-
-def test_parse_oauth_auth_file():
-    raw = {
+def chatgpt_auth(email: str = "test@example.com") -> dict:
+    key = "test-key-with-at-least-thirty-two-bytes"
+    id_token = jwt.encode({"email": email}, key, algorithm="HS256")
+    return {
+        "auth_mode": "chatgpt",
         "tokens": {
-            "id_token": "eyJ...",
-            "access_token": "eyJ...access",
-            "refresh_token": "rt_...",
-        },
-        "OPENAI_API_KEY": None,
-    }
-    auth = parse_auth_file(raw)
-    assert get_auth_mode(auth) == AuthMode.OAUTH
-    assert auth.tokens is not None
-    assert auth.tokens.access_token == "eyJ...access"
-
-
-def test_parse_apikey_auth_file():
-    raw = {
-        "auth_mode": "apikey",
-        "OPENAI_API_KEY": "sk-test123",
-    }
-    auth = parse_auth_file(raw)
-    assert get_auth_mode(auth) == AuthMode.API_KEY
-
-
-def test_parse_agent_identity_file():
-    raw = {
-        "auth_mode": "agentIdentity",
-        "agent_identity": {
-            "agent_runtime_id": "rt_123",
-            "agent_private_key": "base64key...",
-            "task_id": "task_1",
-            "account_id": "acc_1",
-            "chatgpt_user_id": "user_1",
+            "id_token": id_token,
+            "access_token": jwt.encode({"exp": int(time.time()) + 3600}, key, algorithm="HS256"),
+            "refresh_token": "refresh-token",
+            "account_id": "account-1",
         },
     }
-    auth = parse_auth_file(raw)
-    assert get_auth_mode(auth) == AuthMode.AGENT_IDENTITY
 
 
-def test_token_not_expired():
-    # Create a token that expires in 1 hour
-    import time, jwt
-    payload = {"exp": int(time.time()) + 3600}
-    token = jwt.encode(payload, "secret", algorithm="HS256")
-    assert _token_expired(token) is False
+def test_default_config(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path)
+    assert cfg.version == 1
+    assert cfg.api.port == 8844
+    assert cfg.api.speed == SpeedMode.STANDARD
+    assert cfg.api.selected_accounts == []
+    assert cfg.api.auto_switch.enabled is True
 
 
-def test_token_expired():
-    import time, jwt
-    payload = {"exp": int(time.time()) - 100}
-    token = jwt.encode(payload, "secret", algorithm="HS256")
-    assert _token_expired(token) is True
+def test_save_and_reload_config(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path)
+    cfg.api.port = 9999
+    cfg.api.speed = SpeedMode.FAST
+    save_config(cfg, tmp_path)
 
-
-# ─── Models tests ───
-
-def test_app_config_serialization():
-    cfg = AppConfig(api=ApiConfig(port=1456, speed=SpeedMode.FAST))
-    data = cfg.model_dump()
-    assert data["api"]["port"] == 1456
-    reloaded = AppConfig(**data)
+    reloaded = load_config(tmp_path)
+    assert reloaded.api.port == 9999
     assert reloaded.api.speed == SpeedMode.FAST
 
 
-def test_cockpit_status_model():
-    from models import CockpitStatus
-    status = CockpitStatus(
-        running=True,
-        uptime_seconds=10.5,
-        accounts=[],
-        recent_requests=[],
+def test_config_dir_endpoint_reports_backend_path(tmp_path: Path) -> None:
+    set_api_config_dir(tmp_path)
+    try:
+        assert get_config_dir_info() == {"path": str(tmp_path)}
+    finally:
+        set_api_config_dir(get_config_dir())
+
+
+def test_account_meta_roundtrip(tmp_path: Path) -> None:
+    meta = AccountMeta(
+        id="test-1",
+        name="Test Account",
+        email="test@openai.com",
+        auth_mode=AuthMode.OAUTH,
+        plan_type="pro",
+        team_name="Personal",
+        quota=QuotaSnapshot(weekly_percent=80, hourly_percent=30),
     )
-    d = status.model_dump()
-    assert d["running"] is True
-    assert d["uptime_seconds"] == 10.5
+    save_meta(meta, tmp_path)
+    loaded = load_meta("test-1", tmp_path)
+    assert loaded is not None
+    assert loaded.email == "test@openai.com"
+    assert loaded.quota.weekly_percent == 80
 
 
-# ─── Quota parsing tests ───
+def test_list_selected_accounts(tmp_path: Path) -> None:
+    for index in range(2):
+        save_meta(AccountMeta(id=f"acc-{index}", email=f"user{index}@openai.com"), tmp_path)
 
-def test_parse_timestamp():
-    from quota import _parse_timestamp
-    import time
+    cfg = load_config(tmp_path)
+    cfg.api.selected_accounts = ["acc-0"]
+    save_config(cfg, tmp_path)
 
-    # Unix timestamp in seconds
-    ts = int(time.time()) + 86400
-    assert _parse_timestamp(str(ts)) == ts
+    assert [account.id for account in list_selected_accounts(tmp_path)] == ["acc-0"]
 
-    # Unix timestamp in milliseconds
-    ms = str(ts * 1000)
-    assert _parse_timestamp(ms) == ts
 
-    # ISO format
+def test_parse_chatgpt_auth_file() -> None:
+    auth = parse_auth_file(chatgpt_auth())
+    validate_chatgpt_auth(auth)
+    assert auth.tokens is not None
+
+
+@pytest.mark.parametrize(
+    "auth_mode", ["api", "apikey", "agentIdentity", "ChatGPT", "CHATGPT", None]
+)
+def test_only_exact_chatgpt_auth_mode_is_allowed(auth_mode: str | None) -> None:
+    raw = chatgpt_auth()
+    raw["auth_mode"] = auth_mode
+    with pytest.raises(ValueError, match="只支持 ChatGPT 登录"):
+        validate_chatgpt_auth(parse_auth_file(raw))
+
+
+def test_token_expiration() -> None:
+    key = "test-key-with-at-least-thirty-two-bytes"
+    valid = jwt.encode({"exp": int(time.time()) + 3600}, key, algorithm="HS256")
+    expired = jwt.encode({"exp": int(time.time()) - 100}, key, algorithm="HS256")
+    assert _token_expired(valid) is False
+    assert _token_expired(expired) is True
+
+
+def test_app_config_serialization() -> None:
+    cfg = AppConfig(api=ApiConfig(port=1456, speed=SpeedMode.FAST))
+    data = cfg.model_dump()
+    assert data["api"]["port"] == 1456
+    assert AppConfig(**data).api.speed == SpeedMode.FAST
+
+
+def test_cockpit_status_model() -> None:
+    status = CockpitStatus(running=True, uptime_seconds=10.5)
+    assert status.model_dump()["running"] is True
+
+
+def test_parse_timestamp() -> None:
+    timestamp = int(time.time()) + 86400
+    assert _parse_timestamp(str(timestamp)) == timestamp
+    assert _parse_timestamp(str(timestamp * 1000)) == timestamp
     assert _parse_timestamp("2026-12-31T00:00:00Z") > 0
 
 
-def test_collect_records():
-    from quota import _collect_records
-
-    data = {
-        "accounts": {
-            "default": {
-                "account": {
-                    "plan_type": "pro",
-                    "account_id": "acc_1",
-                }
-            }
-        }
-    }
-    records = _collect_records(data)
-    assert len(records) == 1
-    assert records[0]["account"]["plan_type"] == "pro"
+def test_collect_records() -> None:
+    mapping = {"accounts": {"default": {"account": {"plan_type": "pro"}}}}
+    sequence = {"accounts": [{"account": {"plan_type": "team"}}]}
+    assert _collect_records(mapping)[0]["account"]["plan_type"] == "pro"
+    assert _collect_records(sequence)[0]["account"]["plan_type"] == "team"
 
 
-def test_collect_records_array():
-    from quota import _collect_records
-
-    data = {
-        "accounts": [
-            {"account": {"plan_type": "team"}},
-            {"account": {"plan_type": "pro"}},
-        ]
-    }
-    records = _collect_records(data)
-    assert len(records) == 2
+def test_find_available_port_skips_occupied() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 18844))
+        sock.listen(1)
+        assert find_available_port(18844) == 18845
 
 
-def test_find_available_port():
-    from main import find_available_port
-
-    # Default port should be available in test environment
-    port = find_available_port(8844)
-    assert port >= 8844
-    assert port < 9000
+def test_frontend_dist_path_in_source() -> None:
+    assert frontend_dist_path().name == "dist"
+    assert frontend_dist_path().parent.name == "frontend"
 
 
-def test_find_available_port_skips_occupied():
-    import socket
-    from main import find_available_port
+def test_frontend_dist_path_when_frozen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert frontend_dist_path() == tmp_path / "frontend" / "dist"
 
-    # Occupy port 18844
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 18844))
-    sock.listen(1)
 
+@pytest.mark.asyncio
+async def test_refresh_missing_account_returns_404(tmp_path: Path) -> None:
+    set_api_config_dir(tmp_path)
     try:
-        port = find_available_port(18844)
-        assert port == 18845  # Should skip to next
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/api/accounts/missing/refresh")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "账号 missing 不存在"
     finally:
-        sock.close()
+        set_api_config_dir(get_config_dir())
+
+
+@pytest.mark.asyncio
+async def test_invalid_auth_mode_returns_readable_error_without_writing(tmp_path: Path) -> None:
+    set_api_config_dir(tmp_path)
+    raw = chatgpt_auth()
+    raw["auth_mode"] = "api"
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/accounts/import", json={"auth_json": json.dumps(raw)}
+            )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Codex Cockpit Lite 只支持 ChatGPT 登录"
+        accounts_dir = tmp_path / "accounts"
+        assert not accounts_dir.exists() or list(accounts_dir.iterdir()) == []
+    finally:
+        set_api_config_dir(get_config_dir())
+
+
+@pytest.mark.asyncio
+async def test_lifespan_cancels_quota_refresh_task() -> None:
+    async with app.router.lifespan_context(app):
+        task = app.state.quota_refresh_task
+        assert task.done() is False
+    assert task.cancelled() is True

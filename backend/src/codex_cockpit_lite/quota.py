@@ -4,32 +4,35 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import suppress
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
-from auth import build_auth_headers, extract_account_id_from_access_token
-from config import load_auth_file, load_meta, save_meta, accounts_dir
-from models import AccountMeta, QuotaSnapshot, AuthMode
+from .auth import (
+    build_auth_headers,
+    extract_account_id_from_access_token,
+    parse_auth_file,
+    validate_chatgpt_auth,
+)
+from .config import load_auth_file, load_meta, save_meta
+from .models import AccountMeta, QuotaSnapshot
 
 logger = logging.getLogger(__name__)
 
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
-ACCOUNTS_CHECK_URL = (
-    "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
-)
+ACCOUNTS_CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 SUBSCRIPTIONS_URL = "https://chatgpt.com/backend-api/subscriptions"
 QUOTA_REFRESH_INTERVAL_SECONDS = 300
 REQUEST_TIMEOUT = 30.0
 
 
-async def refresh_quota(account_id: str, config_dir: Optional[Path] = None) -> QuotaSnapshot:
+async def refresh_quota(account_id: str, config_dir: Path | None = None) -> QuotaSnapshot:
     """Fetch quota from wham/usage endpoint."""
     try:
         headers = await _build_quota_headers(account_id, config_dir)
-    except Exception as e:
-        logger.warning("Cannot build headers for quota query %s: %s", account_id, e)
+    except (OSError, ValueError) as error:
+        logger.warning("Cannot build headers for quota query %s: %s", account_id, error)
         return QuotaSnapshot()
 
     try:
@@ -37,8 +40,8 @@ async def refresh_quota(account_id: str, config_dir: Optional[Path] = None) -> Q
             resp = await client.get(USAGE_URL, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-    except Exception as e:
-        logger.warning("Quota fetch failed for %s: %s", account_id, e)
+    except (httpx.HTTPError, ValueError) as error:
+        logger.warning("Quota fetch failed for %s: %s", account_id, error)
         return QuotaSnapshot()
 
     rate_limit = data.get("rate_limit", {}) or {}
@@ -49,7 +52,7 @@ async def refresh_quota(account_id: str, config_dir: Optional[Path] = None) -> Q
         used = window.get("used_percent", 0) or 0
         return max(0, min(100, 100 - int(used)))
 
-    def _reset_at(window: dict) -> Optional[int]:
+    def _reset_at(window: dict) -> int | None:
         if window.get("reset_at"):
             return int(window["reset_at"])
         after = window.get("reset_after_seconds", 0)
@@ -75,13 +78,13 @@ async def refresh_quota(account_id: str, config_dir: Optional[Path] = None) -> Q
 
 
 async def refresh_subscription(
-    account_id: str, config_dir: Optional[Path] = None
-) -> Optional[AccountMeta]:
+    account_id: str, config_dir: Path | None = None
+) -> AccountMeta | None:
     """Fetch subscription info from accounts/check endpoint."""
     try:
         headers = await _build_subscription_headers(account_id, config_dir)
-    except Exception as e:
-        logger.warning("Cannot build headers for subscription query %s: %s", account_id, e)
+    except (OSError, ValueError) as error:
+        logger.warning("Cannot build headers for subscription query %s: %s", account_id, error)
         return None
 
     try:
@@ -89,8 +92,8 @@ async def refresh_subscription(
             resp = await client.get(ACCOUNTS_CHECK_URL, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-    except Exception as e:
-        logger.warning("Subscription fetch failed for %s: %s", account_id, e)
+    except (httpx.HTTPError, ValueError) as error:
+        logger.warning("Subscription fetch failed for %s: %s", account_id, error)
         return None
 
     snapshot = _parse_account_check(data, account_id, config_dir)
@@ -113,14 +116,12 @@ async def refresh_subscription(
     return None
 
 
-async def _build_quota_headers(account_id: str, config_dir: Optional[Path] = None) -> dict:
+async def _build_quota_headers(account_id: str, config_dir: Path | None = None) -> dict:
     headers = build_auth_headers(account_id, config_dir)
     raw = load_auth_file(account_id, config_dir)
-    from auth import parse_auth_file, get_auth_mode
-
     auth = parse_auth_file(raw)
-    mode = get_auth_mode(auth)
-    if mode == AuthMode.OAUTH and auth.tokens:
+    validate_chatgpt_auth(auth)
+    if auth.tokens:
         headers["ChatGPT-Account-Id"] = (
             extract_account_id_from_access_token(auth.tokens.access_token) or ""
         )
@@ -128,14 +129,12 @@ async def _build_quota_headers(account_id: str, config_dir: Optional[Path] = Non
     return headers
 
 
-async def _build_subscription_headers(account_id: str, config_dir: Optional[Path] = None) -> dict:
+async def _build_subscription_headers(account_id: str, config_dir: Path | None = None) -> dict:
     headers = build_auth_headers(account_id, config_dir)
     raw = load_auth_file(account_id, config_dir)
-    from auth import parse_auth_file, get_auth_mode
-
     auth = parse_auth_file(raw)
-    mode = get_auth_mode(auth)
-    if mode == AuthMode.OAUTH and auth.tokens:
+    validate_chatgpt_auth(auth)
+    if auth.tokens:
         headers["ChatGPT-Account-Id"] = (
             extract_account_id_from_access_token(auth.tokens.access_token) or ""
         )
@@ -149,8 +148,8 @@ async def _build_subscription_headers(account_id: str, config_dir: Optional[Path
 
 
 def _parse_account_check(
-    data: dict, account_id: str, config_dir: Optional[Path] = None
-) -> Optional[dict]:
+    data: dict, account_id: str, config_dir: Path | None = None
+) -> dict | None:
     """Extract subscription info from accounts/check response."""
     records = _collect_records(data)
     if not records:
@@ -174,14 +173,28 @@ def _parse_account_check(
     if not expires:
         expires = _first_str(account_obj, ["expires_at"])
 
-    name = _first_str(account_obj, [
-        "name", "display_name", "account_name",
-        "organization_name", "workspace_name", "title",
-    ])
+    name = _first_str(
+        account_obj,
+        [
+            "name",
+            "display_name",
+            "account_name",
+            "organization_name",
+            "workspace_name",
+            "title",
+        ],
+    )
 
-    structure = _first_str(account_obj, [
-        "structure", "account_structure", "kind", "type", "account_type",
-    ])
+    structure = _first_str(
+        account_obj,
+        [
+            "structure",
+            "account_structure",
+            "kind",
+            "type",
+            "account_type",
+        ],
+    )
 
     email = _first_str(account_obj, ["email"])
 
@@ -193,17 +206,15 @@ def _parse_account_check(
     }
 
     if expires:
-        try:
+        with suppress(ValueError, TypeError):
             result["subscription_expires_at"] = _parse_timestamp(expires)
-        except (ValueError, TypeError):
-            pass
 
     return result
 
 
 async def _fetch_subscriptions_fallback(
-    account_id: str, headers: dict, config_dir: Optional[Path] = None
-) -> Optional[dict]:
+    account_id: str, headers: dict, config_dir: Path | None = None
+) -> dict | None:
     """Fallback: try /backend-api/subscriptions."""
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
@@ -214,12 +225,11 @@ async def _fetch_subscriptions_fallback(
         expires = _first_str(data, ["active_until", "expires_at"])
         result = {"plan_type": plan or ""}
         if expires:
-            try:
+            with suppress(ValueError, TypeError):
                 result["subscription_expires_at"] = _parse_timestamp(expires)
-            except (ValueError, TypeError):
-                pass
         return result
-    except Exception:
+    except (httpx.HTTPError, ValueError) as error:
+        logger.warning("Subscription fallback failed for %s: %s", account_id, error)
         return None
 
 
@@ -235,29 +245,30 @@ def _collect_records(data: dict) -> list[dict]:
     return result
 
 
-def _get_preferred_account_id(account_id: str, config_dir: Optional[Path] = None) -> Optional[str]:
+def _get_preferred_account_id(account_id: str, config_dir: Path | None = None) -> str | None:
     meta = load_meta(account_id, config_dir)
     if meta and meta.email:
         return meta.email
     try:
         raw = load_auth_file(account_id, config_dir)
-        from auth import parse_auth_file, get_auth_mode
+        from .auth import parse_auth_file
+
         auth = parse_auth_file(raw)
         if auth.tokens:
             return extract_account_id_from_access_token(auth.tokens.access_token)
-    except Exception:
-        pass
+    except (OSError, ValueError) as error:
+        logger.warning("Cannot determine preferred account id for %s: %s", account_id, error)
     return None
 
 
-def _find_matching_record(records: list[dict], preferred_id: Optional[str], data: dict) -> Optional[dict]:
+def _find_matching_record(records: list[dict], preferred_id: str | None, data: dict) -> dict | None:
     if not records:
         return None
     for r in records:
         acct = r.get("account", r)
         candidates = [
-            acct.get(k) for k in
-            ["account_id", "id", "chatgpt_account_id", "workspace_id"]
+            acct.get(k)
+            for k in ["account_id", "id", "chatgpt_account_id", "workspace_id"]
             if acct.get(k)
         ]
         if preferred_id and any(c == preferred_id for c in candidates):
@@ -274,7 +285,7 @@ def _find_matching_record(records: list[dict], preferred_id: Optional[str], data
     return records[0] if records else None
 
 
-def _first_str(obj: dict, keys: list[str]) -> Optional[str]:
+def _first_str(obj: dict, keys: list[str]) -> str | None:
     for k in keys:
         v = obj.get(k)
         if isinstance(v, str) and v.strip():
@@ -292,9 +303,10 @@ def _parse_timestamp(raw: str) -> int:
             ts = int(time.time() + ts)
         return ts
     # ISO format
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         return int(dt.timestamp())
-    except Exception:
+    except ValueError:
         return int(float(raw))

@@ -18,12 +18,8 @@
       <h2>Codex Cockpit</h2>
       <span class="version">Lite v0.1</span>
     </div>
-    {#each navItems as item}
-      <button
-        class="nav-btn"
-        class:active={page === item.id}
-        onclick={() => page = item.id}
-      >
+    {#each navItems as item (item.id)}
+      <button class="nav-btn" class:active={page === item.id} onclick={() => (page = item.id)}>
         {item.label}
       </button>
     {/each}
@@ -86,7 +82,7 @@
   }
 
   .nav-btn:hover {
-    background: rgba(255,255,255,0.05);
+    background: rgba(255, 255, 255, 0.05);
   }
 
   .nav-btn.active {

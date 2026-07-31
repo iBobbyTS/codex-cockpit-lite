@@ -28,7 +28,9 @@ test('显示完整设置并通过后端保存修改', async () => {
       return Promise.resolve({ path: '/Users/test/.config/codex-cockpit' });
     }
     if (method === 'PUT' && path === '/api/config') return Promise.resolve({ ok: true });
-    return Promise.reject(new Error(`Unexpected API call: ${method} ${path} ${JSON.stringify(body)}`));
+    return Promise.reject(
+      new Error(`Unexpected API call: ${method} ${path} ${JSON.stringify(body)}`),
+    );
   });
 
   render(Settings, { apiClient });

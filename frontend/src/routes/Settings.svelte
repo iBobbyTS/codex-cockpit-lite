@@ -1,12 +1,7 @@
 <script>
-  import { invoke } from '@tauri-apps/api/core';
+  import { apiClient as defaultApiClient } from '../lib/apiClient.js';
 
-  async function tauriApi(method, path, body) {
-    const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
-    return JSON.parse(text);
-  }
-
-  let { apiClient = tauriApi } = $props();
+  let { apiClient = defaultApiClient } = $props();
   let config = $state(null);
   let configDir = $state('');
   let loading = $state(true);
@@ -46,7 +41,9 @@
     }
   }
 
-  $effect(() => { loadConfig(); });
+  $effect(() => {
+    loadConfig();
+  });
 </script>
 
 <div class="page">
@@ -63,13 +60,7 @@
       <div class="form">
         <label>
           端口
-          <input
-            type="number"
-            min="1"
-            max="65535"
-            bind:value={config.api.port}
-            onchange={save}
-          />
+          <input type="number" min="1" max="65535" bind:value={config.api.port} onchange={save} />
         </label>
         <label>
           绑定地址
@@ -92,8 +83,8 @@
       <h2>配置目录</h2>
       <p class="path">{configDir}</p>
       <p class="hint">
-        可通过环境变量 <code>CODEX_COCKPIT_HOME</code> 修改。
-        账号 auth.json 文件存储在 <code>accounts/</code> 子目录中。
+        可通过环境变量 <code>CODEX_COCKPIT_HOME</code> 修改。 账号 auth.json 文件存储在
+        <code>accounts/</code> 子目录中。
       </p>
     </div>
   {:else}
@@ -106,28 +97,63 @@
   {#if savedMsg}
     <div class="toast success">
       {savedMsg}
-      <button class="toast-close" aria-label="关闭保存提示" onclick={() => savedMsg = ''}>✕</button>
+      <button class="toast-close" aria-label="关闭保存提示" onclick={() => (savedMsg = '')}
+        >✕</button
+      >
     </div>
   {/if}
 
   {#if errorMsg}
     <div class="toast error">
       {errorMsg}
-      <button class="toast-close" aria-label="关闭错误提示" onclick={() => errorMsg = ''}>✕</button>
+      <button class="toast-close" aria-label="关闭错误提示" onclick={() => (errorMsg = '')}
+        >✕</button
+      >
     </div>
   {/if}
 </div>
 
 <style>
-  .page { max-width: 600px; }
-  .header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-  h1 { font-size: 20px; font-weight: 700; }
-  h2 { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
-  .saving, .loading { color: var(--text-muted); font-size: 13px; }
+  .page {
+    max-width: 600px;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 700;
+  }
+  h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .saving,
+  .loading {
+    color: var(--text-muted);
+    font-size: 13px;
+  }
 
-  .form { display: flex; flex-direction: column; gap: 12px; }
-  .form label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--text-muted); }
-  .form input, .form select { width: 200px; }
+  .form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 14px;
+    color: var(--text-muted);
+  }
+  .form input,
+  .form select {
+    width: 200px;
+  }
 
   .path {
     font-family: monospace;
@@ -147,8 +173,16 @@
     border-radius: 3px;
     font-size: 11px;
   }
-  .load-error { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-  .load-error p { color: var(--text-muted); font-size: 14px; }
+  .load-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .load-error p {
+    color: var(--text-muted);
+    font-size: 14px;
+  }
   .toast {
     position: fixed;
     top: 16px;
@@ -161,9 +195,18 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
   }
-  .toast.success { background: var(--success); }
-  .toast.error { background: var(--danger); }
-  .toast-close { background: none; border: none; color: white; padding: 0 2px; }
+  .toast.success {
+    background: var(--success);
+  }
+  .toast.error {
+    background: var(--danger);
+  }
+  .toast-close {
+    background: none;
+    border: none;
+    color: white;
+    padding: 0 2px;
+  }
 </style>

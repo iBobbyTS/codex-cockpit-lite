@@ -2,11 +2,14 @@
 
 import asyncio
 import json
+import logging
 import sys
 from pathlib import Path
 
-from config import get_config_dir, save_meta
-from quota import refresh_quota, refresh_subscription
+from .config import get_config_dir
+from .quota import refresh_quota, refresh_subscription
+
+logger = logging.getLogger(__name__)
 
 
 async def main():
@@ -27,8 +30,9 @@ async def main():
             "plan_type": sub.plan_type if sub else "",
             "team_name": sub.team_name if sub else "",
         }
-    except Exception as e:
-        result = {"ok": False, "error": str(e)}
+    except Exception as error:
+        logger.exception("Quota CLI failed for %s", account_id)
+        result = {"ok": False, "error": str(error)}
 
     print(json.dumps(result))
 

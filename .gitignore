@@ -9,6 +9,7 @@ target/
 
 # Tauri auto-generated
 frontend/src-tauri/gen/
+frontend/src-tauri/binaries/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

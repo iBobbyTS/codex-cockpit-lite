@@ -1,32 +1,25 @@
 <script>
-  import { invoke } from '@tauri-apps/api/core';
+  import { apiClient as defaultApiClient } from '../lib/apiClient.js';
 
-  async function api(method, path, body) {
-    const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
-    return JSON.parse(text);
-  }
+  let { apiClient = defaultApiClient, pollIntervalMs = 3000 } = $props();
   let config = $state(null);
-  let accounts = $state([]);
   let status = $state(null);
   let backendRunning = $state(false);
   let portMismatch = $state(false);
   let reportedPort = $state(0);
+  let errorMsg = $state('');
 
   async function loadConfig() {
     try {
-      config = await api('GET', '/api/config');
-    } catch {}
-  }
-
-  async function loadAccounts() {
-    try {
-      accounts = await api('GET', '/api/accounts');
-    } catch {}
+      config = await apiClient('GET', '/api/config');
+    } catch (error) {
+      errorMsg = '读取配置失败: ' + String(error);
+    }
   }
 
   async function loadStatus() {
     try {
-      status = await api('GET', '/v1/cockpit/status');
+      status = await apiClient('GET', '/v1/cockpit/status');
       if (status) {
         backendRunning = true;
         if (status?.actual_port && status.actual_port !== config?.api?.port) {
@@ -34,27 +27,35 @@
           portMismatch = true;
           if (config) {
             config.api.port = status.actual_port;
-            await api('PUT', '/api/config', config);
+            await apiClient('PUT', '/api/config', config);
           }
         } else {
           portMismatch = false;
         }
       }
-    } catch {
+    } catch (error) {
       backendRunning = false;
+      errorMsg = '读取服务状态失败: ' + String(error);
     }
   }
 
   async function saveAutoSwitch() {
     if (!config) return;
-    await api('PUT', '/api/config', config);
+    try {
+      await apiClient('PUT', '/api/config', config);
+    } catch (error) {
+      errorMsg = '保存自动切换设置失败: ' + String(error);
+    }
   }
 
-  $effect(() => { loadConfig(); loadAccounts(); });
+  $effect(() => {
+    loadConfig();
+  });
   $effect(() => {
     if (config) {
       loadStatus();
-      const interval = setInterval(loadStatus, 3000);
+      if (pollIntervalMs <= 0) return;
+      const interval = setInterval(loadStatus, pollIntervalMs);
       return () => clearInterval(interval);
     }
   });
@@ -63,16 +64,27 @@
 <div class="page">
   <h1>API 服务</h1>
 
+  {#if errorMsg}
+    <div class="toast error">
+      {errorMsg}
+      <button class="toast-close" aria-label="关闭错误提示" onclick={() => (errorMsg = '')}
+        >✕</button
+      >
+    </div>
+  {/if}
+
   {#if portMismatch}
     <div class="card mismatch-banner">
       <div class="mismatch-content">
         <span class="mismatch-icon">⚠️</span>
         <div>
           <strong>端口变更通知</strong>
-          <p>端口 {config?.api?.port} 已被更新为 {reportedPort}（源端口被占用）。配置已自动同步。</p>
+          <p>
+            端口 {config?.api?.port} 已被更新为 {reportedPort}（源端口被占用）。配置已自动同步。
+          </p>
         </div>
       </div>
-      <button class="mismatch-close" onclick={() => portMismatch = false}>✕</button>
+      <button class="mismatch-close" onclick={() => (portMismatch = false)}>✕</button>
     </div>
   {/if}
 
@@ -80,21 +92,25 @@
     <div class="status-row">
       <div>
         <span class="label">状态:</span>
-        <span class="status-dot" class:running={backendRunning} class:stopped={!backendRunning}></span>
+        <span class="status-dot" class:running={backendRunning} class:stopped={!backendRunning}
+        ></span>
         {backendRunning ? '运行中' : '已停止'}
       </div>
       <div>
-        <span class="label">端口:</span> {config?.api?.port || ''}
+        <span class="label">端口:</span>
+        {config?.api?.port || ''}
         {#if portMismatch}
           <span class="mismatch-hint">→ 实际: {reportedPort}</span>
         {/if}
       </div>
       {#if status}
         <div>
-          <span class="label">活跃账号:</span> {status.active_account_email || '无'}
+          <span class="label">活跃账号:</span>
+          {status.active_account_email || '无'}
         </div>
         <div>
-          <span class="label">请求总数:</span> {status.total_requests}
+          <span class="label">请求总数:</span>
+          {status.total_requests}
         </div>
       {/if}
     </div>
@@ -117,7 +133,8 @@
             额度阈值 (%):
             <input
               type="number"
-              min="0" max="100"
+              min="0"
+              max="100"
               bind:value={config.api.auto_switch.quota_threshold_percent}
               onchange={saveAutoSwitch}
             />
@@ -131,7 +148,7 @@
     <div class="card" style="margin-top: 16px;">
       <h2>最近请求</h2>
       <div class="log-list">
-        {#each status.recent_requests.slice(0, 20) as req}
+        {#each status.recent_requests.slice(0, 20) as req (req.id)}
           <div class="log-entry">
             <span class="log-method {req.method.toLowerCase()}">{req.method}</span>
             <span class="log-path">{req.path}</span>
@@ -148,13 +165,36 @@
 </div>
 
 <style>
-  .page { max-width: 800px; }
-  h1 { font-size: 20px; font-weight: 700; margin-bottom: 16px; }
-  h2 { font-size: 16px; font-weight: 600; margin-bottom: 10px; }
+  .page {
+    max-width: 800px;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 16px;
+  }
+  h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
 
-  .status-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-  .status-row { display: flex; gap: 20px; flex-wrap: wrap; }
-  .label { color: var(--text-muted); font-size: 13px; margin-right: 4px; }
+  .status-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+  }
+  .status-row {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .label {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-right: 4px;
+  }
   .status-dot {
     display: inline-block;
     width: 8px;
@@ -162,8 +202,12 @@
     border-radius: 50%;
     margin-right: 6px;
   }
-  .status-dot.running { background: var(--success); }
-  .status-dot.stopped { background: var(--danger); }
+  .status-dot.running {
+    background: var(--success);
+  }
+  .status-dot.stopped {
+    background: var(--danger);
+  }
 
   .toggle {
     display: flex;
@@ -172,11 +216,25 @@
     font-size: 14px;
     cursor: pointer;
   }
-  .form-row { display: flex; gap: 8px; align-items: center; }
-  .form-row label { font-size: 14px; }
-  .form-row input { width: 80px; }
+  .form-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .form-row label {
+    font-size: 14px;
+  }
+  .form-row input {
+    width: 80px;
+  }
 
-  .log-list { display: flex; flex-direction: column; gap: 4px; max-height: 400px; overflow-y: auto; }
+  .log-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 400px;
+    overflow-y: auto;
+  }
   .log-entry {
     display: flex;
     gap: 12px;
@@ -191,14 +249,41 @@
     text-transform: uppercase;
     font-size: 11px;
   }
-  .log-method.post { color: var(--accent); }
-  .log-method.get { color: var(--success); }
-  .log-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .log-status { min-width: 32px; font-weight: 600; }
-  .log-status.ok { color: var(--success); }
-  .log-status.err { color: var(--danger); }
-  .log-account { color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .log-time { color: var(--text-muted); font-size: 11px; min-width: 40px; text-align: right; }
+  .log-method.post {
+    color: var(--accent);
+  }
+  .log-method.get {
+    color: var(--success);
+  }
+  .log-path {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .log-status {
+    min-width: 32px;
+    font-weight: 600;
+  }
+  .log-status.ok {
+    color: var(--success);
+  }
+  .log-status.err {
+    color: var(--danger);
+  }
+  .log-account {
+    color: var(--text-muted);
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .log-time {
+    color: var(--text-muted);
+    font-size: 11px;
+    min-width: 40px;
+    text-align: right;
+  }
 
   .mismatch-banner {
     background: rgba(245, 158, 11, 0.12);
@@ -209,10 +294,24 @@
     align-items: flex-start;
     gap: 12px;
   }
-  .mismatch-content { display: flex; align-items: flex-start; gap: 10px; flex: 1; }
-  .mismatch-icon { font-size: 20px; flex-shrink: 0; }
-  .mismatch-content strong { font-size: 14px; }
-  .mismatch-content p { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+  .mismatch-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    flex: 1;
+  }
+  .mismatch-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  .mismatch-content strong {
+    font-size: 14px;
+  }
+  .mismatch-content p {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
   .mismatch-close {
     background: none;
     border: none;
@@ -222,6 +321,35 @@
     cursor: pointer;
     flex-shrink: 0;
   }
-  .mismatch-close:hover { color: var(--text); }
-  .mismatch-hint { color: var(--warning); font-size: 12px; margin-left: 4px; }
+  .mismatch-close:hover {
+    color: var(--text);
+  }
+  .mismatch-hint {
+    color: var(--warning);
+    font-size: 12px;
+    margin-left: 4px;
+  }
+  .toast {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 8px 16px;
+    border-radius: 8px;
+    color: white;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  }
+  .toast.error {
+    background: var(--danger);
+  }
+  .toast-close {
+    background: none;
+    border: none;
+    color: white;
+    padding: 0 2px;
+  }
 </style>

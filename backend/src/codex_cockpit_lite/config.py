@@ -6,9 +6,10 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
-from models import AppConfig, ApiConfig, AccountMeta, AuthMode
+from pydantic import ValidationError
+
+from .models import AccountMeta, ApiConfig, AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -23,18 +24,18 @@ def get_config_dir() -> Path:
     return DEFAULT_CONFIG_DIR
 
 
-def ensure_config_dir(config_dir: Optional[Path] = None) -> Path:
+def ensure_config_dir(config_dir: Path | None = None) -> Path:
     d = config_dir or get_config_dir()
     d.mkdir(parents=True, exist_ok=True)
     (d / "accounts").mkdir(exist_ok=True)
     return d
 
 
-def _default_config_path(config_dir: Optional[Path] = None) -> Path:
+def _default_config_path(config_dir: Path | None = None) -> Path:
     return ensure_config_dir(config_dir) / "config.json"
 
 
-def load_config(config_dir: Optional[Path] = None) -> AppConfig:
+def load_config(config_dir: Path | None = None) -> AppConfig:
     path = _default_config_path(config_dir)
     if not path.exists():
         cfg = AppConfig()
@@ -43,12 +44,12 @@ def load_config(config_dir: Optional[Path] = None) -> AppConfig:
     try:
         raw = json.loads(path.read_text())
         return AppConfig(**raw)
-    except Exception as e:
-        logger.warning("Failed to parse config.json, using defaults: %s", e)
+    except (OSError, json.JSONDecodeError, ValidationError) as error:
+        logger.warning("Failed to parse config.json, using defaults: %s", error)
         return AppConfig()
 
 
-def save_config(config: AppConfig, config_dir: Optional[Path] = None) -> None:
+def save_config(config: AppConfig, config_dir: Path | None = None) -> None:
     path = _default_config_path(config_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -56,37 +57,37 @@ def save_config(config: AppConfig, config_dir: Optional[Path] = None) -> None:
     tmp.replace(path)
 
 
-def get_api_config(config_dir: Optional[Path] = None) -> ApiConfig:
+def get_api_config(config_dir: Path | None = None) -> ApiConfig:
     return load_config(config_dir).api
 
 
-def accounts_dir(config_dir: Optional[Path] = None) -> Path:
+def accounts_dir(config_dir: Path | None = None) -> Path:
     return ensure_config_dir(config_dir) / "accounts"
 
 
-def account_dir(account_id: str, config_dir: Optional[Path] = None) -> Path:
+def account_dir(account_id: str, config_dir: Path | None = None) -> Path:
     return accounts_dir(config_dir) / account_id
 
 
-def load_auth_file(account_id: str, config_dir: Optional[Path] = None) -> dict:
+def load_auth_file(account_id: str, config_dir: Path | None = None) -> dict:
     path = account_dir(account_id, config_dir) / "auth.json"
     if not path.exists():
         raise FileNotFoundError(f"auth.json not found for account {account_id}")
     return json.loads(path.read_text())
 
 
-def load_meta(account_id: str, config_dir: Optional[Path] = None) -> Optional[AccountMeta]:
+def load_meta(account_id: str, config_dir: Path | None = None) -> AccountMeta | None:
     path = account_dir(account_id, config_dir) / "meta.json"
     if not path.exists():
         return None
     try:
         return AccountMeta(**json.loads(path.read_text()))
-    except Exception as e:
-        logger.warning("Failed to parse meta.json for %s: %s", account_id, e)
+    except (OSError, json.JSONDecodeError, ValidationError) as error:
+        logger.warning("Failed to parse meta.json for %s: %s", account_id, error)
         return None
 
 
-def save_meta(meta: AccountMeta, config_dir: Optional[Path] = None) -> None:
+def save_meta(meta: AccountMeta, config_dir: Path | None = None) -> None:
     d = account_dir(meta.id, config_dir)
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / "meta.tmp"
@@ -94,7 +95,7 @@ def save_meta(meta: AccountMeta, config_dir: Optional[Path] = None) -> None:
     tmp.replace(d / "meta.json")
 
 
-def list_account_metas(config_dir: Optional[Path] = None) -> list[AccountMeta]:
+def list_account_metas(config_dir: Path | None = None) -> list[AccountMeta]:
     ad = accounts_dir(config_dir)
     if not ad.exists():
         return []
@@ -107,9 +108,8 @@ def list_account_metas(config_dir: Optional[Path] = None) -> list[AccountMeta]:
     return metas
 
 
-def list_selected_accounts(config_dir: Optional[Path] = None) -> list[AccountMeta]:
+def list_selected_accounts(config_dir: Path | None = None) -> list[AccountMeta]:
     cfg = load_config(config_dir)
-    selected_ids = set(cfg.api.selected_accounts)
     all_metas = {m.id: m for m in list_account_metas(config_dir)}
     result = []
     for aid in cfg.api.selected_accounts:

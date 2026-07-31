@@ -14,7 +14,10 @@ function normalizePlanKey(planType) {
 }
 
 function normalizeProTier(planType) {
-  const compact = (planType || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  const compact = (planType || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
   if (
     compact === 'prolite' ||
     compact === 'pro5x' ||
@@ -54,8 +57,10 @@ export function getCodexPlanPresentation(planType) {
     };
   }
 
-  return PLAN_PRESENTATIONS[key] || {
-    label: (planType || 'Free').trim(),
-    className: 'free',
-  };
+  return (
+    PLAN_PRESENTATIONS[key] || {
+      label: (planType || 'Free').trim(),
+      className: 'free',
+    }
+  );
 }

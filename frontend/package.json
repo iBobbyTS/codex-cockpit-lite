@@ -7,20 +7,38 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "check": "svelte-check --fail-on-warnings",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=24.0.0 <25",
+    "npm": ">=11.0.0 <12"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-http": "^2.5.9",
-    "@tauri-apps/plugin-shell": "^2",
-    "svelte": "^5"
+    "@tauri-apps/api": "2.11.1",
+    "svelte": "5.56.8"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^5",
-    "@tauri-apps/cli": "^2",
+    "@eslint/js": "10.0.1",
+    "@sveltejs/vite-plugin-svelte": "7.2.0",
+    "@tauri-apps/cli": "2.11.4",
     "@testing-library/svelte": "^5.4.2",
-    "jsdom": "^29.1.1",
-    "vite": "^6",
-    "vitest": "^4.1.10"
+    "eslint": "10.8.0",
+    "eslint-plugin-svelte": "3.22.0",
+    "globals": "17.8.0",
+    "jsdom": "30.0.1",
+    "prettier": "3.9.6",
+    "prettier-plugin-svelte": "4.1.1",
+    "svelte-check": "4.7.4",
+    "typescript": "6.0.3",
+    "vite": "8.2.0",
+    "vitest": "4.1.10"
+  },
+  "allowScripts": {
+    "fsevents@2.3.3": true
   }
 }

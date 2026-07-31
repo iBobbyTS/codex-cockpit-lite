@@ -7,21 +7,49 @@ import asyncio
 import logging
 import socket
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import get_config_dir, ensure_config_dir, load_config, save_config
-from status import router as status_router, set_config_dir, set_actual_port
-from api import router as api_router, set_api_config_dir
+from .api import router as api_router
+from .api import set_api_config_dir
+from .config import ensure_config_dir, get_config_dir, load_config, save_config
+from .status import router as status_router
+from .status import set_actual_port, set_config_dir
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Codex Cockpit Lite", version="0.1.0")
+_config_dir: Path = get_config_dir()
+_actual_port: int = 0
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Initialize shared state and stop the refresh worker cleanly."""
+    ensure_config_dir(_config_dir)
+    set_config_dir(_config_dir)
+    set_api_config_dir(_config_dir)
+    logger.info("Codex Cockpit Lite started, config dir: %s", _config_dir)
+    if _actual_port > 0:
+        print(f"PORT={_actual_port}", flush=True)
+
+    refresh_task = asyncio.create_task(_periodic_quota_refresh())
+    application.state.quota_refresh_task = refresh_task
+    try:
+        yield
+    finally:
+        refresh_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await refresh_task
+
+
+app = FastAPI(title="Codex Cockpit Lite", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,10 +61,17 @@ app.add_middleware(
 app.include_router(status_router)
 app.include_router(api_router)
 
+
 # Serve Svelte frontend static files
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-if not (_FRONTEND_DIST / "index.html").exists():
-    _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend"
+def frontend_dist_path() -> Path:
+    """Resolve WebUI assets in both source and PyInstaller environments."""
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root is not None:
+        return Path(bundle_root) / "frontend" / "dist"
+    return Path(__file__).resolve().parents[3] / "frontend" / "dist"
+
+
+_FRONTEND_DIST = frontend_dist_path()
 if (_FRONTEND_DIST / "index.html").exists():
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
 
@@ -47,9 +82,6 @@ if (_FRONTEND_DIST / "index.html").exists():
         if file_path.is_file():
             return FileResponse(file_path)
         return FileResponse(_FRONTEND_DIST / "index.html")
-
-_config_dir: Path = get_config_dir()
-_actual_port: int = 0
 
 
 def find_available_port(start_port: int, host: str = "127.0.0.1", max_attempts: int = 100) -> int:
@@ -67,27 +99,17 @@ def find_available_port(start_port: int, host: str = "127.0.0.1", max_attempts: 
     raise RuntimeError(f"No available port found in range {start_port}-{start_port + max_attempts}")
 
 
-@app.on_event("startup")
-async def startup():
-    global _config_dir
-    ensure_config_dir(_config_dir)
-    set_config_dir(_config_dir)
-    set_api_config_dir(_config_dir)
-    logger.info("Codex Cockpit Lite started, config dir: %s", _config_dir)
-
-    # Start background quota refresh
-    asyncio.create_task(_periodic_quota_refresh())
-
-
 @app.get("/v1/models")
 async def get_models(request: Request):
-    from proxy import proxy_models
+    from .proxy import proxy_models
+
     return await proxy_models(request, _config_dir)
 
 
 @app.post("/v1/responses")
 async def post_responses(request: Request):
-    from proxy import proxy_responses
+    from .proxy import proxy_responses
+
     return await proxy_responses(request, _config_dir)
 
 
@@ -103,43 +125,49 @@ async def get_responses_ws(request: Request):
 
 @app.post("/v1/responses/compact")
 async def post_responses_compact(request: Request):
-    from proxy import proxy_responses_compact
+    from .proxy import proxy_responses_compact
+
     return await proxy_responses_compact(request, _config_dir)
 
 
 @app.post("/v1/chat/completions")
 async def post_chat_completions(request: Request):
-    from proxy import proxy_chat_completions
+    from .proxy import proxy_chat_completions
+
     return await proxy_chat_completions(request, _config_dir)
 
 
 @app.post("/v1/images/generations")
 async def post_images_generations(request: Request):
-    from proxy import proxy_images_generations
+    from .proxy import proxy_images_generations
+
     return await proxy_images_generations(request, _config_dir)
 
 
 @app.post("/v1/images/edits")
 async def post_images_edits(request: Request):
-    from proxy import proxy_images_edits
+    from .proxy import proxy_images_edits
+
     return await proxy_images_edits(request, _config_dir)
 
 
 @app.post("/v1/alpha/search")
 async def post_alpha_search(request: Request):
-    from proxy import proxy_alpha_search
+    from .proxy import proxy_alpha_search
+
     return await proxy_alpha_search(request, _config_dir)
 
 
 @app.post("/backend-api/codex/alpha/search")
 async def post_backend_alpha_search(request: Request):
-    from proxy import proxy_alpha_search
+    from .proxy import proxy_alpha_search
+
     return await proxy_alpha_search(request, _config_dir)
 
 
 async def _periodic_quota_refresh():
     """Refresh quotas for all selected accounts periodically."""
-    from config import list_selected_accounts
+    from .config import list_selected_accounts
 
     while True:
         await asyncio.sleep(300)  # 5 minutes
@@ -147,12 +175,13 @@ async def _periodic_quota_refresh():
             accounts = list_selected_accounts(_config_dir)
             for meta in accounts:
                 try:
-                    from quota import refresh_quota
+                    from .quota import refresh_quota
+
                     await refresh_quota(meta.id, _config_dir)
-                except Exception as e:
-                    logger.warning("Background quota refresh failed for %s: %s", meta.id, e)
-        except Exception as e:
-            logger.warning("Background quota refresh error: %s", e)
+                except Exception as error:  # noqa: BLE001 - long-running worker boundary.
+                    logger.warning("Background quota refresh failed for %s: %s", meta.id, error)
+        except Exception as error:  # noqa: BLE001 - long-running worker must stay alive.
+            logger.warning("Background quota refresh error: %s", error)
 
 
 def main():
@@ -163,13 +192,19 @@ def main():
         help="Configuration directory (default: ~/.config/codex-cockpit)",
     )
     parser.add_argument(
-        "--port", type=int, default=None, help="Override API port from config",
+        "--port",
+        type=int,
+        default=None,
+        help="Override API port from config",
     )
     parser.add_argument(
-        "--host", default=None, help="Override bind host from config",
+        "--host",
+        default=None,
+        help="Override bind host from config",
     )
     parser.add_argument(
-        "--log-level", default="info",
+        "--log-level",
+        default="info",
         choices=["debug", "info", "warning", "error"],
         help="Log level",
     )
@@ -181,7 +216,7 @@ def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    global _config_dir
+    global _actual_port, _config_dir
     if args.config_dir:
         _config_dir = Path(args.config_dir).expanduser()
 
@@ -191,10 +226,8 @@ def main():
 
     # Find an available port, auto-increment if taken
     actual_port = find_available_port(desired_port, host)
+    _actual_port = actual_port
     set_actual_port(actual_port)
-
-    # Notify parent (Tauri) of the actual port via stdout
-    print(f"PORT={actual_port}", flush=True)
 
     # Write back to config if port changed
     if actual_port != cfg.api.port:

@@ -1,15 +1,10 @@
 <script>
-  import { invoke } from '@tauri-apps/api/core';
   import { SvelteSet } from 'svelte/reactivity';
+  import { apiClient as defaultApiClient } from '../lib/apiClient.js';
   import { getCodexPlanPresentation } from '../lib/codexPlans.js';
   import { formatQuotaReset } from '../lib/quotaTime.js';
 
-  async function tauriApi(method, path, body) {
-    const text = await invoke('api_call', { method, path, body: body ? JSON.stringify(body) : null });
-    return JSON.parse(text);
-  }
-
-  let { apiClient = tauriApi, pollIntervalMs = 5000 } = $props();
+  let { apiClient = defaultApiClient, pollIntervalMs = 5000 } = $props();
 
   let config = $state(null);
   let accounts = $state([]);
@@ -45,14 +40,15 @@
           ...current,
           ...imported,
           plan_type: imported.plan_type || current.plan_type,
-          subscription_expires_at: imported.subscription_expires_at ?? current.subscription_expires_at,
+          subscription_expires_at:
+            imported.subscription_expires_at ?? current.subscription_expires_at,
           team_name: imported.team_name || current.team_name,
           quota: imported.quota?.queried_at ? imported.quota : current.quota,
         }
       : imported;
 
     accounts = current
-      ? accounts.map((account) => account.id === next.id ? next : account)
+      ? accounts.map((account) => (account.id === next.id ? next : account))
       : [...accounts, next];
 
     if (config?.api && !config.api.selected_accounts.includes(next.id)) {
@@ -67,7 +63,7 @@
   }
 
   function replaceAccount(updated) {
-    accounts = accounts.map((account) => account.id === updated.id ? updated : account);
+    accounts = accounts.map((account) => (account.id === updated.id ? updated : account));
   }
 
   async function refreshAccount(accountId) {
@@ -209,7 +205,9 @@
   });
 
   $effect(() => {
-    const interval = setInterval(() => { nowMs = Date.now(); }, 60_000);
+    const interval = setInterval(() => {
+      nowMs = Date.now();
+    }, 60_000);
     return () => clearInterval(interval);
   });
 </script>
@@ -219,7 +217,7 @@
     <h1>账号管理</h1>
     <div class="actions">
       <button onclick={importOfficial} disabled={importing}>从 ~/.codex 导入</button>
-      <button class="primary" onclick={() => showImport = !showImport} disabled={importing}>
+      <button class="primary" onclick={() => (showImport = !showImport)} disabled={importing}>
         {showImport ? '取消' : '导入 auth.json'}
       </button>
     </div>
@@ -227,10 +225,7 @@
 
   {#if showImport}
     <div class="card import-panel">
-      <textarea
-        bind:value={importJson}
-        placeholder="粘贴 auth.json 内容..."
-      ></textarea>
+      <textarea bind:value={importJson} placeholder="粘贴 auth.json 内容..."></textarea>
       <div class="import-row">
         <input bind:value={importName} placeholder="显示名称（可选）" />
         <button class="primary" onclick={importAccount} disabled={importing}>导入</button>
@@ -240,13 +235,18 @@
 
   {#if deleteTarget}
     <div class="modal-layer">
-      <button class="modal-backdrop" type="button" aria-label="取消删除" onclick={() => deleteTarget = null}></button>
+      <button
+        class="modal-backdrop"
+        type="button"
+        aria-label="取消删除"
+        onclick={() => (deleteTarget = null)}
+      ></button>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
         <h3 id="delete-dialog-title">确认删除</h3>
         <p>此操作不可撤销，该账号的所有凭据将被移除。</p>
         <div class="modal-actions">
           <button class="danger" onclick={confirmDelete}>删除</button>
-          <button onclick={() => deleteTarget = null}>取消</button>
+          <button onclick={() => (deleteTarget = null)}>取消</button>
         </div>
       </div>
     </div>
@@ -257,12 +257,15 @@
   {/if}
 
   {#if errorMsg}
-    <div class="toast error">{errorMsg} <button class="toast-close" onclick={() => errorMsg = ''}>✕</button></div>
+    <div class="toast error">
+      {errorMsg} <button class="toast-close" onclick={() => (errorMsg = '')}>✕</button>
+    </div>
   {/if}
 
   {#if duplicate}
     <div class="modal-layer">
-      <button class="modal-backdrop" type="button" aria-label="取消覆盖" onclick={cancelDuplicate}></button>
+      <button class="modal-backdrop" type="button" aria-label="取消覆盖" onclick={cancelDuplicate}
+      ></button>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="duplicate-dialog-title">
         <h3 id="duplicate-dialog-title">重复账号</h3>
         <p>该邮箱已存在账号，是否覆盖更新？覆盖将刷新凭据信息。</p>
@@ -276,12 +279,17 @@
 
   {#if unsupportedModal}
     <div class="modal-layer">
-      <button class="modal-backdrop" type="button" aria-label="关闭提示" onclick={() => unsupportedModal = false}></button>
+      <button
+        class="modal-backdrop"
+        type="button"
+        aria-label="关闭提示"
+        onclick={() => (unsupportedModal = false)}
+      ></button>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="unsupported-dialog-title">
         <h3 id="unsupported-dialog-title">不支持的认证方式</h3>
-        <p>Codex Cockpit Lite 当前仅支持 ChatGPT (OAuth) 登录方式。API Key 和 Agent Identity 暂不可用。</p>
+        <p>Codex Cockpit Lite 只支持 ChatGPT 登录。</p>
         <div class="modal-actions">
-          <button onclick={() => unsupportedModal = false}>我知道了</button>
+          <button onclick={() => (unsupportedModal = false)}>我知道了</button>
         </div>
       </div>
     </div>
@@ -309,7 +317,11 @@
           </div>
           <div class="account-quota">
             {#if refreshingIds.has(account.id)}
-              <span class="refresh-indicator" role="status" aria-label="正在刷新 {account.email || account.name}">
+              <span
+                class="refresh-indicator"
+                role="status"
+                aria-label="正在刷新 {account.email || account.name}"
+              >
                 <span class="refresh-spin">⟳</span>
               </span>
             {/if}
@@ -317,15 +329,23 @@
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
               </div>
-              <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}>{account.quota?.weekly_percent || 0}%</span>
-              <span class="quota-reset">{formatQuotaReset(account.quota?.weekly_resets_at, nowMs)}</span>
+              <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}
+                >{account.quota?.weekly_percent || 0}%</span
+              >
+              <span class="quota-reset"
+                >{formatQuotaReset(account.quota?.weekly_resets_at, nowMs)}</span
+              >
             </div>
             <div class="quota-row">
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.hourly_percent || 0}%"></div>
               </div>
-              <span class="quota-pct" class:low={account.quota?.hourly_percent < 20}>{account.quota?.hourly_percent || 0}%</span>
-              <span class="quota-reset">{formatQuotaReset(account.quota?.hourly_resets_at, nowMs)}</span>
+              <span class="quota-pct" class:low={account.quota?.hourly_percent < 20}
+                >{account.quota?.hourly_percent || 0}%</span
+              >
+              <span class="quota-reset"
+                >{formatQuotaReset(account.quota?.hourly_resets_at, nowMs)}</span
+              >
             </div>
           </div>
         </div>
@@ -343,7 +363,7 @@
           >
             {sel ? '禁用' : '启用'}
           </button>
-          <button class="danger" onclick={() => deleteTarget = account.id}>删除</button>
+          <button class="danger" onclick={() => (deleteTarget = account.id)}>删除</button>
         </div>
       </div>
     {:else}
@@ -353,15 +373,23 @@
 </div>
 
 <style>
-  .page { max-width: 800px; }
+  .page {
+    max-width: 800px;
+  }
   .header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 20px;
   }
-  .header h1 { font-size: 20px; font-weight: 700; }
-  .actions { display: flex; gap: 8px; }
+  .header h1 {
+    font-size: 20px;
+    font-weight: 700;
+  }
+  .actions {
+    display: flex;
+    gap: 8px;
+  }
 
   .import-panel {
     margin-bottom: 20px;
@@ -369,11 +397,23 @@
     flex-direction: column;
     gap: 10px;
   }
-  .import-row { display: flex; gap: 8px; }
-  .import-row input { flex: 1; }
-  .error { color: var(--danger); font-size: 13px; }
+  .import-row {
+    display: flex;
+    gap: 8px;
+  }
+  .import-row input {
+    flex: 1;
+  }
+  .error {
+    color: var(--danger);
+    font-size: 13px;
+  }
 
-  .account-list { display: flex; flex-direction: column; gap: 10px; }
+  .account-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
 
   .account-card {
     display: flex;
@@ -381,14 +421,46 @@
     align-items: center;
     gap: 16px;
   }
-  .account-main { flex: 1; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-  .account-info h3 { font-size: 15px; margin-bottom: 2px; }
-  .email { font-size: 12px; color: var(--text-muted); }
-  .tags { display: flex; gap: 6px; margin-top: 4px; align-items: center; flex-wrap: wrap; }
-  .team { font-size: 12px; color: var(--text-muted); }
+  .account-main {
+    flex: 1;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+  }
+  .account-info h3 {
+    font-size: 15px;
+    margin-bottom: 2px;
+  }
+  .email {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .tags {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .team {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
 
-  .account-quota { position: relative; display: flex; flex-direction: column; gap: 2px; padding-right: 20px; }
-  .quota-row { display: grid; grid-template-columns: 80px 32px 128px; align-items: center; gap: 6px; }
+  .account-quota {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-right: 20px;
+  }
+  .quota-row {
+    display: grid;
+    grid-template-columns: 80px 32px 128px;
+    align-items: center;
+    gap: 6px;
+  }
   .quota-bar {
     width: 80px;
     height: 5px;
@@ -402,53 +474,127 @@
     border-radius: 2.5px;
     transition: width 0.3s;
   }
-  .quota-pct { font-size: 12px; font-weight: 600; width: 32px; text-align: right; }
-  .quota-pct.low { color: var(--warning); }
-  .refresh-indicator { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
-  .refresh-spin { display: block; font-size: 14px; color: var(--accent); animation: spin 1s linear infinite; }
-  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-  .quota-reset { font-size: 10px; color: var(--text-muted); width: 128px; white-space: nowrap; text-align: left; }
+  .quota-pct {
+    font-size: 12px;
+    font-weight: 600;
+    width: 32px;
+    text-align: right;
+  }
+  .quota-pct.low {
+    color: var(--warning);
+  }
+  .refresh-indicator {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+  .refresh-spin {
+    display: block;
+    font-size: 14px;
+    color: var(--accent);
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .quota-reset {
+    font-size: 10px;
+    color: var(--text-muted);
+    width: 128px;
+    white-space: nowrap;
+    text-align: left;
+  }
 
-  .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
-  .empty { color: var(--text-muted); text-align: center; padding: 40px; }
-
-  
+  .account-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .empty {
+    color: var(--text-muted);
+    text-align: center;
+    padding: 40px;
+  }
 
   .modal-layer {
-    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-    display: flex; align-items: center; justify-content: center;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     z-index: 100;
   }
   .modal-backdrop {
-    position: absolute; inset: 0;
-    width: 100%; height: 100%; padding: 0;
-    border: 0; border-radius: 0;
-    background: rgba(0,0,0,0.6);
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: rgba(0, 0, 0, 0.6);
   }
   .modal {
-    position: relative; z-index: 1;
+    position: relative;
+    z-index: 1;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 24px;
     min-width: 340px;
     max-width: 400px;
-    box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
   }
-  .modal h3 { font-size: 16px; margin-bottom: 8px; }
-  .modal p { font-size: 13px; color: var(--text-muted); margin-bottom: 20px; line-height: 1.5; }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
-
+  .modal h3 {
+    font-size: 16px;
+    margin-bottom: 8px;
+  }
+  .modal p {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+    line-height: 1.5;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
 
   .toast {
-    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
-    background: var(--accent); color: white;
-    padding: 8px 20px; border-radius: 8px;
-    font-size: 14px; z-index: 200;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-    display: flex; align-items: center; gap: 10px;
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--accent);
+    color: white;
+    padding: 8px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    z-index: 200;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
-  .toast.error { background: var(--danger); }
-  .toast-close { background: none; border: none; color: white; font-size: 14px; cursor: pointer; padding: 0 2px; }
-
+  .toast.error {
+    background: var(--danger);
+  }
+  .toast-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0 2px;
+  }
 </style>

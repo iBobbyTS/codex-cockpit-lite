@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.codex-cockpit-lite",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "python3 ../scripts/build_sidecar.py && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "python3 ../scripts/build_sidecar.py",
     "frontendDist": "../dist"
   },
   "app": {
@@ -34,15 +34,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": [],
-    "resources": {
-      "../../backend/": "backend/",
-      "../dist/": "frontend/"
-    }
+    "macOS": {
+      "signingIdentity": "-",
+      "hardenedRuntime": false
+    },
+    "externalBin": ["binaries/codex-cockpit-backend"]
   },
-  "plugins": {
-    "shell": {
-      "open": true
-    }
-  }
+  "plugins": {}
 }

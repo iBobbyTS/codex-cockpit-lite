@@ -8,15 +8,14 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
 
 import httpx
 from fastapi import Request, Response
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from auth import build_auth_headers, build_search_headers, get_auth_mode, parse_auth_file
-from config import load_auth_file, load_config, list_selected_accounts, load_meta
-from models import AuthMode, SpeedMode
+from .auth import build_auth_headers, build_search_headers
+from .config import list_selected_accounts, load_config
+from .models import SpeedMode
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ _active_account_index = 0
 _recent_requests: list[dict] = []
 
 
-def get_active_account(config_dir: Optional[Path] = None) -> Optional[dict]:
+def get_active_account(config_dir: Path | None = None) -> dict | None:
     """Get the currently active account (first selected, enabled)."""
     accounts = list_selected_accounts(config_dir)
     if not accounts:
@@ -50,7 +49,7 @@ def get_active_account(config_dir: Optional[Path] = None) -> Optional[dict]:
     }
 
 
-def switch_to_next_account(config_dir: Optional[Path] = None) -> Optional[dict]:
+def switch_to_next_account(config_dir: Path | None = None) -> dict | None:
     """Switch to the next available selected account."""
     global _active_account_index
     accounts = list_selected_accounts(config_dir)
@@ -60,7 +59,10 @@ def switch_to_next_account(config_dir: Optional[Path] = None) -> Optional[dict]:
     meta = accounts[_active_account_index]
     logger.info(
         "Switched to account %d/%d: %s (%s)",
-        _active_account_index + 1, len(accounts), meta.email, meta.id,
+        _active_account_index + 1,
+        len(accounts),
+        meta.email,
+        meta.id,
     )
     return {
         "id": meta.id,
@@ -90,65 +92,78 @@ def get_active_index() -> int:
     return _active_account_index
 
 
-async def proxy_responses(request: Request, config_dir: Optional[Path] = None) -> Response:
+async def proxy_responses(request: Request, config_dir: Path | None = None) -> Response:
     """Proxy /v1/responses with SSE streaming and auto-switch on 429."""
     return await _proxy_with_retry(
-        request, f"{UPSTREAM_BASE}/v1/responses", config_dir,
+        request,
+        f"{UPSTREAM_BASE}/v1/responses",
+        config_dir,
         is_sse=True,
     )
 
 
-async def proxy_responses_compact(request: Request, config_dir: Optional[Path] = None) -> Response:
+async def proxy_responses_compact(request: Request, config_dir: Path | None = None) -> Response:
     """Proxy /v1/responses/compact."""
     return await _proxy_with_retry(
-        request, f"{UPSTREAM_BASE}/v1/responses/compact", config_dir,
+        request,
+        f"{UPSTREAM_BASE}/v1/responses/compact",
+        config_dir,
         is_sse=True,
     )
 
 
-async def proxy_chat_completions(request: Request, config_dir: Optional[Path] = None) -> Response:
+async def proxy_chat_completions(request: Request, config_dir: Path | None = None) -> Response:
     """Proxy /v1/chat/completions."""
     return await _proxy_with_retry(
-        request, f"{UPSTREAM_BASE}/v1/chat/completions", config_dir,
+        request,
+        f"{UPSTREAM_BASE}/v1/chat/completions",
+        config_dir,
         is_sse=True,
     )
 
 
-async def proxy_models(request: Request, config_dir: Optional[Path] = None) -> Response:
+async def proxy_models(request: Request, config_dir: Path | None = None) -> Response:
     """Proxy /v1/models."""
     return await _proxy_with_retry(
-        request, f"{UPSTREAM_BASE}/v1/models", config_dir,
+        request,
+        f"{UPSTREAM_BASE}/v1/models",
+        config_dir,
     )
 
 
-async def proxy_images_generations(request: Request, config_dir: Optional[Path] = None) -> Response:
+async def proxy_images_generations(request: Request, config_dir: Path | None = None) -> Response:
     """Proxy /v1/images/generations."""
     return await _proxy_with_retry(
-        request, f"{UPSTREAM_BASE}/v1/images/generations", config_dir,
+        request,
+        f"{UPSTREAM_BASE}/v1/images/generations",
+        config_dir,
     )
 
 
-async def proxy_images_edits(request: Request, config_dir: Optional[Path] = None) -> Response:
+async def proxy_images_edits(request: Request, config_dir: Path | None = None) -> Response:
     """Proxy /v1/images/edits."""
     return await _proxy_with_retry(
-        request, f"{UPSTREAM_BASE}/v1/images/edits", config_dir,
+        request,
+        f"{UPSTREAM_BASE}/v1/images/edits",
+        config_dir,
     )
 
 
-async def proxy_alpha_search(request: Request, config_dir: Optional[Path] = None) -> Response:
+async def proxy_alpha_search(request: Request, config_dir: Path | None = None) -> Response:
     """Proxy /v1/alpha/search to ChatGPT backend (OAuth only)."""
     upstream = f"{CHATGPT_BASE}/backend-api/codex/alpha/search"
 
     account = get_active_account(config_dir)
     if not account:
         return JSONResponse(
-            {"error": "No active account configured"}, status_code=503,
+            {"error": "No active account configured"},
+            status_code=503,
         )
 
     try:
         headers = build_search_headers(account["id"], config_dir)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+    except (OSError, ValueError) as error:
+        return JSONResponse({"error": str(error)}, status_code=500)
 
     body = await request.body()
     start = time.time()
@@ -162,44 +177,48 @@ async def proxy_alpha_search(request: Request, config_dir: Optional[Path] = None
             )
         duration_ms = int((time.time() - start) * 1000)
 
-        record_request({
-            "id": str(uuid.uuid4()),
-            "timestamp": time.time(),
-            "account_id": account["id"],
-            "account_email": account["email"],
-            "method": "POST",
-            "path": "/v1/alpha/search",
-            "model": "",
-            "status": resp.status_code,
-            "duration_ms": duration_ms,
-        })
+        record_request(
+            {
+                "id": str(uuid.uuid4()),
+                "timestamp": time.time(),
+                "account_id": account["id"],
+                "account_email": account["email"],
+                "method": "POST",
+                "path": "/v1/alpha/search",
+                "model": "",
+                "status": resp.status_code,
+                "duration_ms": duration_ms,
+            }
+        )
 
         return Response(
             content=resp.content,
             status_code=resp.status_code,
             headers=dict(resp.headers),
         )
-    except Exception as e:
+    except httpx.HTTPError as error:
         duration_ms = int((time.time() - start) * 1000)
-        record_request({
-            "id": str(uuid.uuid4()),
-            "timestamp": time.time(),
-            "account_id": account["id"],
-            "account_email": account["email"],
-            "method": "POST",
-            "path": "/v1/alpha/search",
-            "model": "",
-            "status": 502,
-            "duration_ms": duration_ms,
-            "error": str(e),
-        })
-        return JSONResponse({"error": f"Upstream error: {e}"}, status_code=502)
+        record_request(
+            {
+                "id": str(uuid.uuid4()),
+                "timestamp": time.time(),
+                "account_id": account["id"],
+                "account_email": account["email"],
+                "method": "POST",
+                "path": "/v1/alpha/search",
+                "model": "",
+                "status": 502,
+                "duration_ms": duration_ms,
+                "error": str(error),
+            }
+        )
+        return JSONResponse({"error": f"Upstream error: {error}"}, status_code=502)
 
 
 async def _proxy_with_retry(
     request: Request,
     upstream_url: str,
-    config_dir: Optional[Path] = None,
+    config_dir: Path | None = None,
     is_sse: bool = False,
     max_retries: int = 8,
 ) -> Response:
@@ -211,23 +230,21 @@ async def _proxy_with_retry(
         account = get_active_account(config_dir)
         if not account:
             return JSONResponse(
-                {"error": "No active account configured"}, status_code=503,
+                {"error": "No active account configured"},
+                status_code=503,
             )
 
         try:
             headers = build_auth_headers(account["id"], config_dir)
-        except Exception as e:
-            logger.warning("Auth header build failed for %s: %s", account["id"], e)
+        except (OSError, ValueError) as error:
+            logger.warning("Auth header build failed for %s: %s", account["id"], error)
             if auto_switch.enabled and attempt < max_retries:
                 switch_to_next_account(config_dir)
                 continue
-            return JSONResponse({"error": str(e)}, status_code=500)
+            return JSONResponse({"error": str(error)}, status_code=500)
 
         # Add service_tier header based on speed config
-        raw_auth = load_auth_file(account["id"], config_dir)
-        auth = parse_auth_file(raw_auth)
-        mode = get_auth_mode(auth)
-        if mode == AuthMode.OAUTH and cfg.api.speed == SpeedMode.FAST:
+        if cfg.api.speed == SpeedMode.FAST:
             headers["service_tier"] = "priority"
 
         # Forward request
@@ -251,7 +268,8 @@ async def _proxy_with_retry(
                         headers=req_headers,
                     )
                     upstream_resp = await client.send(
-                        upstream_req, stream=True,
+                        upstream_req,
+                        stream=True,
                     )
                 else:
                     upstream_resp = await client.request(
@@ -264,23 +282,26 @@ async def _proxy_with_retry(
             duration_ms = int((time.time() - start) * 1000)
 
             # Log the request
-            record_request({
-                "id": str(uuid.uuid4()),
-                "timestamp": time.time(),
-                "account_id": account["id"],
-                "account_email": account["email"],
-                "method": request.method,
-                "path": request.url.path,
-                "model": _extract_model(body),
-                "status": upstream_resp.status_code,
-                "duration_ms": duration_ms,
-            })
+            record_request(
+                {
+                    "id": str(uuid.uuid4()),
+                    "timestamp": time.time(),
+                    "account_id": account["id"],
+                    "account_email": account["email"],
+                    "method": request.method,
+                    "path": request.url.path,
+                    "model": _extract_model(body),
+                    "status": upstream_resp.status_code,
+                    "duration_ms": duration_ms,
+                }
+            )
 
             # Check for rate limiting
             if upstream_resp.status_code == 429:
                 logger.warning(
                     "Rate limited on account %s (attempt %d), switching...",
-                    account["email"], attempt + 1,
+                    account["email"],
+                    attempt + 1,
                 )
                 if auto_switch.enabled and attempt < max_retries:
                     switch_to_next_account(config_dir)
@@ -304,7 +325,7 @@ async def _proxy_with_retry(
                         switch_to_next_account(config_dir)
                         continue
                 except ValueError:
-                    pass
+                    logger.debug("Ignoring invalid x-ratelimit-remaining-tokens header")
 
             if is_sse:
                 return StreamingResponse(
@@ -322,25 +343,28 @@ async def _proxy_with_retry(
 
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             duration_ms = int((time.time() - start) * 1000)
-            record_request({
-                "id": str(uuid.uuid4()),
-                "timestamp": time.time(),
-                "account_id": account["id"],
-                "account_email": account["email"],
-                "method": request.method,
-                "path": request.url.path,
-                "model": _extract_model(body),
-                "status": 502,
-                "duration_ms": duration_ms,
-                "error": str(e),
-            })
+            record_request(
+                {
+                    "id": str(uuid.uuid4()),
+                    "timestamp": time.time(),
+                    "account_id": account["id"],
+                    "account_email": account["email"],
+                    "method": request.method,
+                    "path": request.url.path,
+                    "model": _extract_model(body),
+                    "status": 502,
+                    "duration_ms": duration_ms,
+                    "error": str(e),
+                }
+            )
             if auto_switch.enabled and attempt < max_retries:
                 switch_to_next_account(config_dir)
                 continue
             return JSONResponse({"error": f"Upstream error: {e}"}, status_code=502)
 
     return JSONResponse(
-        {"error": "All accounts exhausted"}, status_code=429,
+        {"error": "All accounts exhausted"},
+        status_code=429,
     )
 
 
@@ -348,5 +372,5 @@ def _extract_model(body: bytes) -> str:
     try:
         data = json.loads(body)
         return data.get("model", "")
-    except Exception:
+    except json.JSONDecodeError, UnicodeDecodeError, AttributeError:
         return ""

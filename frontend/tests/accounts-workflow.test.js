@@ -63,7 +63,9 @@ test('导入完成后切换为该账号独立刷新，刷新返回前标记保�
         return result;
       });
     }
-    return Promise.reject(new Error(`Unexpected API call: ${method} ${path} ${JSON.stringify(body)}`));
+    return Promise.reject(
+      new Error(`Unexpected API call: ${method} ${path} ${JSON.stringify(body)}`),
+    );
   });
 
   render(Accounts, { apiClient, pollIntervalMs: 0 });
@@ -93,19 +95,25 @@ test('导入完成后切换为该账号独立刷新，刷新返回前标记保�
   const cardWhileRefreshing = screen.getByText('test@example.com').closest('.account-card');
   expect(within(cardWhileRefreshing).getAllByText('0%')).toHaveLength(2);
 
-  await act(() => refreshDone.resolve(account({
-    name: 'Imported Account',
-    plan_type: 'pro',
-    quota: {
-      weekly_percent: 100,
-      hourly_percent: 94,
-      weekly_resets_at: null,
-      hourly_resets_at: null,
-      queried_at: 123,
-    },
-  })));
+  await act(() =>
+    refreshDone.resolve(
+      account({
+        name: 'Imported Account',
+        plan_type: 'pro',
+        quota: {
+          weekly_percent: 100,
+          hourly_percent: 94,
+          weekly_resets_at: null,
+          hourly_resets_at: null,
+          queried_at: 123,
+        },
+      }),
+    ),
+  );
 
-  await waitFor(() => expect(screen.queryByRole('status', { name: '正在刷新 test@example.com' })).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByRole('status', { name: '正在刷新 test@example.com' })).toBeNull(),
+  );
   const refreshedCard = screen.getByText('test@example.com').closest('.account-card');
   expect(within(refreshedCard).getByText('100%')).toBeTruthy();
   expect(within(refreshedCard).getByText('94%')).toBeTruthy();
@@ -142,17 +150,23 @@ test('手动刷新不进入导入状态，并在返回时同时更新数据和�
   expect(within(pendingCard).getByText('80%')).toBeTruthy();
   expect(within(pendingCard).getByText('70%')).toBeTruthy();
 
-  await act(() => refreshDone.resolve(account({
-    quota: {
-      weekly_percent: 100,
-      hourly_percent: 94,
-      weekly_resets_at: null,
-      hourly_resets_at: null,
-      queried_at: 2,
-    },
-  })));
+  await act(() =>
+    refreshDone.resolve(
+      account({
+        quota: {
+          weekly_percent: 100,
+          hourly_percent: 94,
+          weekly_resets_at: null,
+          hourly_resets_at: null,
+          queried_at: 2,
+        },
+      }),
+    ),
+  );
 
-  await waitFor(() => expect(screen.queryByRole('status', { name: '正在刷新 test@example.com' })).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByRole('status', { name: '正在刷新 test@example.com' })).toBeNull(),
+  );
   const refreshedCard = screen.getByText('test@example.com').closest('.account-card');
   expect(within(refreshedCard).getByText('100%')).toBeTruthy();
   expect(within(refreshedCard).getByText('94%')).toBeTruthy();
@@ -209,8 +223,10 @@ test('多个账号的刷新状态彼此独立', async () => {
       return Promise.resolve(config(['account-1', 'account-2']));
     }
     if (method === 'GET' && path === '/api/accounts') return Promise.resolve([first, second]);
-    if (method === 'POST' && path === '/api/accounts/account-1/refresh') return firstRefresh.promise;
-    if (method === 'POST' && path === '/api/accounts/account-2/refresh') return secondRefresh.promise;
+    if (method === 'POST' && path === '/api/accounts/account-1/refresh')
+      return firstRefresh.promise;
+    if (method === 'POST' && path === '/api/accounts/account-2/refresh')
+      return secondRefresh.promise;
     return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
   });
 
@@ -223,19 +239,27 @@ test('多个账号的刷新状态彼此独立', async () => {
   expect(screen.getByRole('status', { name: '正在刷新 test@example.com' })).toBeTruthy();
   expect(screen.getByRole('status', { name: '正在刷新 second@example.com' })).toBeTruthy();
 
-  await act(() => firstRefresh.resolve(account({
-    quota: {
-      weekly_percent: 100,
-      hourly_percent: 94,
-      weekly_resets_at: null,
-      hourly_resets_at: null,
-      queried_at: 2,
-    },
-  })));
+  await act(() =>
+    firstRefresh.resolve(
+      account({
+        quota: {
+          weekly_percent: 100,
+          hourly_percent: 94,
+          weekly_resets_at: null,
+          hourly_resets_at: null,
+          queried_at: 2,
+        },
+      }),
+    ),
+  );
 
-  await waitFor(() => expect(screen.queryByRole('status', { name: '正在刷新 test@example.com' })).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByRole('status', { name: '正在刷新 test@example.com' })).toBeNull(),
+  );
   expect(screen.getByRole('status', { name: '正在刷新 second@example.com' })).toBeTruthy();
 
   await act(() => secondRefresh.resolve(second));
-  await waitFor(() => expect(screen.queryByRole('status', { name: '正在刷新 second@example.com' })).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByRole('status', { name: '正在刷新 second@example.com' })).toBeNull(),
+  );
 });

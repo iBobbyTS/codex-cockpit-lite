@@ -6,13 +6,12 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Optional
 
 import httpx
 import jwt
 
-from config import load_auth_file, account_dir
-from models import AuthFile, AuthTokens, AuthMode
+from .config import account_dir, load_auth_file
+from .models import AuthFile, AuthTokens
 
 logger = logging.getLogger(__name__)
 
@@ -24,62 +23,39 @@ REFRESH_TIMEOUT = 25.0
 
 def parse_auth_file(raw: dict) -> AuthFile:
     """Parse raw auth.json dict into AuthFile model."""
-    if "OPENAI_API_KEY" in raw and "openai_api_key" not in raw:
-        raw = {**raw, "openai_api_key": raw["OPENAI_API_KEY"]}
     return AuthFile(**raw)
 
 
-def get_auth_mode(auth: AuthFile) -> AuthMode:
-    if auth.agent_identity is not None:
-        return AuthMode.AGENT_IDENTITY
-    if auth.auth_mode == "apikey":
-        return AuthMode.API_KEY
-    if auth.tokens is not None and auth.tokens.access_token:
-        return AuthMode.OAUTH
-    if auth.OPENAI_API_KEY:
-        return AuthMode.API_KEY
-    return AuthMode.OAUTH
+def validate_chatgpt_auth(auth: AuthFile) -> None:
+    """Reject every auth format except the official ChatGPT login format."""
+    if auth.auth_mode != "chatgpt":
+        raise ValueError("Codex Cockpit Lite 只支持 ChatGPT 登录")
+    if auth.tokens is None:
+        raise ValueError("ChatGPT 登录缺少 tokens")
 
 
-def build_auth_headers(account_id: str, config_dir: Optional[Path] = None) -> dict[str, str]:
+def build_auth_headers(account_id: str, config_dir: Path | None = None) -> dict[str, str]:
     """Build Authorization and related headers for upstream requests."""
     raw = load_auth_file(account_id, config_dir)
     auth = parse_auth_file(raw)
-    mode = get_auth_mode(auth)
-
-    headers: dict[str, str] = {}
-
-    if mode == AuthMode.API_KEY:
-        key = auth.OPENAI_API_KEY or ""
-        headers["Authorization"] = f"Bearer {key}"
-        return headers
-
-    if mode == AuthMode.AGENT_IDENTITY:
-        identity = auth.agent_identity
-        assertion = _build_agent_assertion(identity)
-        headers["Authorization"] = f"Bearer {assertion}"
-        return headers
-
-    # OAuth
+    validate_chatgpt_auth(auth)
     tokens = auth.tokens
-    if tokens is None:
-        raise ValueError(f"Account {account_id} has no tokens")
+    assert tokens is not None
 
     access_token = tokens.access_token
     if _token_expired(access_token):
         access_token = _refresh_oauth_token(tokens, account_id, config_dir)
 
-    headers["Authorization"] = f"Bearer {access_token}"
-    return headers
+    return {"Authorization": f"Bearer {access_token}"}
 
 
-def build_search_headers(account_id: str, config_dir: Optional[Path] = None) -> dict[str, str]:
+def build_search_headers(account_id: str, config_dir: Path | None = None) -> dict[str, str]:
     """Build headers for /v1/alpha/search (requires ChatGPT web context)."""
     raw = load_auth_file(account_id, config_dir)
     auth = parse_auth_file(raw)
+    validate_chatgpt_auth(auth)
     tokens = auth.tokens
-    if tokens is None:
-        raise ValueError(f"OAuth tokens required for search, account {account_id}")
+    assert tokens is not None
 
     access_token = tokens.access_token
     if _token_expired(access_token):
@@ -99,18 +75,18 @@ def extract_email_from_id_token(id_token: str) -> str:
     try:
         payload = jwt.decode(id_token, options={"verify_signature": False})
         return payload.get("email", "")
-    except Exception:
+    except jwt.DecodeError, TypeError:
         return ""
 
 
-def extract_account_id_from_access_token(access_token: str) -> Optional[str]:
+def extract_account_id_from_access_token(access_token: str) -> str | None:
     try:
         payload = jwt.decode(access_token, options={"verify_signature": False})
         auth_data = payload.get("https://api.openai.com/auth", {})
         if isinstance(auth_data, dict):
             return auth_data.get("account_id")
-    except Exception:
-        pass
+    except jwt.DecodeError, TypeError:
+        logger.debug("Unable to decode account id from access token")
     return None
 
 
@@ -119,12 +95,12 @@ def _token_expired(token: str) -> bool:
         payload = jwt.decode(token, options={"verify_signature": False})
         exp = payload.get("exp", 0)
         return (exp - TOKEN_REFRESH_SKEW_SECONDS) < time.time()
-    except Exception:
+    except jwt.DecodeError, TypeError:
         return True
 
 
 def _refresh_oauth_token(
-    tokens: AuthTokens, account_id: str, config_dir: Optional[Path] = None
+    tokens: AuthTokens, account_id: str, config_dir: Path | None = None
 ) -> str:
     if not tokens.refresh_token:
         logger.warning("Account %s: no refresh_token, cannot refresh", account_id)
@@ -154,42 +130,12 @@ def _refresh_oauth_token(
                 raw["tokens"]["access_token"] = new_access
                 if new_refresh:
                     raw["tokens"]["refresh_token"] = new_refresh
-                raw["last_refresh"] = time.strftime(
-                    "%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()
-                )
+                raw["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime())
                 tmp = ad / "auth.tmp"
                 tmp.write_text(json.dumps(raw, indent=2))
                 tmp.replace(auth_path)
 
         return new_access
-    except Exception as e:
+    except (httpx.HTTPError, OSError, ValueError, KeyError, json.JSONDecodeError) as e:
         logger.error("OAuth refresh failed for account %s: %s", account_id, e)
         return tokens.access_token
-
-
-def _build_agent_assertion(identity) -> str:
-    """Build a minimal Agent Identity assertion JWT using Ed25519."""
-    now = int(time.time())
-    header = {"alg": "EdDSA", "typ": "JWT"}
-    payload = {
-        "iss": identity.agent_runtime_id,
-        "sub": identity.chatgpt_user_id,
-        "aud": "https://auth.openai.com/api/accounts",
-        "iat": now,
-        "exp": now + 300,
-        "account_id": identity.account_id,
-    }
-
-    try:
-        import base64
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric import ed25519
-
-        key_bytes = base64.b64decode(identity.agent_private_key)
-        private_key = serialization.load_der_private_key(key_bytes, password=None)
-        if not isinstance(private_key, ed25519.Ed25519PrivateKey):
-            raise ValueError("Agent private key is not Ed25519")
-        return jwt.encode(payload, private_key, algorithm="EdDSA", headers=header)
-    except ImportError:
-        logger.error("cryptography package required for Agent Identity signing")
-        raise

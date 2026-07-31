@@ -2,26 +2,44 @@
 name = "codex-cockpit-lite"
 version = "0.1.0"
 description = "Simplified Codex multi-account manager with API proxy"
-requires-python = ">=3.11"
+requires-python = ">=3.14,<3.15"
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.34",
-    "httpx>=0.28",
-    "websockets>=14",
-    "pydantic>=2.10",
-    "watchdog>=6",
-    "aiosqlite>=0.20",
-    "pyjwt>=2.10",
+    "fastapi==0.141.1",
+    "httpx==0.28.1",
+    "pydantic==2.13.4",
+    "pyjwt==2.13.0",
+    "uvicorn[standard]==0.52.0",
 ]
 
-[project.optional-dependencies]
+[project.scripts]
+codex-cockpit-backend = "codex_cockpit_lite.main:main"
+
+[dependency-groups]
 dev = [
-    "pytest>=8",
-    "pytest-asyncio>=0.25",
-    "pytest-httpx>=0.35",
-    "respx>=0.22",
+    "pyinstaller==6.21.0",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "ruff==0.16.1",
 ]
+
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codex_cockpit_lite"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "BLE", "SIM", "RUF"]
+
+[tool.uv]
+required-version = "==0.12.0"

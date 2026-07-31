@@ -3,30 +3,36 @@
 from __future__ import annotations
 
 import json
-import uuid
+import logging
 import shutil
+import uuid
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
-from config import (
-    load_config, save_config, ensure_config_dir, get_config_dir,
-    load_meta, save_meta, list_account_metas, list_selected_accounts,
-    load_auth_file, account_dir,
+from .auth import extract_email_from_id_token
+from .config import (
+    account_dir,
+    get_config_dir,
+    list_account_metas,
+    load_config,
+    load_meta,
+    save_config,
+    save_meta,
 )
-from models import (
-    AppConfig, AccountMeta, QuotaSnapshot, AuthMode,
+from .models import (
+    AccountMeta,
+    AppConfig,
+    AuthMode,
 )
-from quota import refresh_quota as py_refresh_quota
-from quota import refresh_subscription as py_refresh_subscription
+from .quota import refresh_quota as py_refresh_quota
+from .quota import refresh_subscription as py_refresh_subscription
 
-import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
-_config_dir: Optional[Path] = None
+_config_dir: Path | None = None
 
 
 def set_api_config_dir(path: Path) -> None:
@@ -41,15 +47,6 @@ def _cd() -> Path:
 def _extract_account_id(auth_data: dict) -> str:
     """Extract account_id from tokens.account_id in auth.json."""
     return (auth_data.get("tokens") or {}).get("account_id", "") or ""
-
-
-def _find_account_by_email(email: str):
-    if not email:
-        return None
-    for meta in list_account_metas(_cd()):
-        if meta.email.lower() == email.lower():
-            return meta
-    return None
 
 
 def _dedup_account(email: str, account_id: str):
@@ -67,6 +64,7 @@ def _dedup_account(email: str, account_id: str):
 
 # ─── Config ───
 
+
 @router.get("/config")
 async def get_config():
     return load_config(_cd()).model_dump()
@@ -81,13 +79,14 @@ def get_config_dir_info():
 async def put_config(body: dict):
     try:
         cfg = AppConfig(**body)
-    except Exception as e:
-        raise HTTPException(400, f"Invalid config: {e}")
+    except ValidationError as error:
+        raise HTTPException(400, f"Invalid config: {error}") from error
     save_config(cfg, _cd())
     return {"ok": True}
 
 
 # ─── Accounts ───
+
 
 @router.get("/accounts")
 async def get_accounts():
@@ -111,29 +110,17 @@ async def import_account(req: Request):
     # Validate JSON
     try:
         auth_data = json.loads(auth_json)
-    except json.JSONDecodeError as e:
-        raise HTTPException(400, f"Invalid auth.json: {e}")
-
-    account_id = str(uuid.uuid4())
-    ad = account_dir(account_id, _cd())
-    ad.mkdir(parents=True, exist_ok=True)
+    except json.JSONDecodeError as error:
+        raise HTTPException(400, f"Invalid auth.json: {error}") from error
 
     # Check auth mode BEFORE writing files
-    if (auth_data.get("auth_mode") or "").lower() != "chatgpt":
-        raise HTTPException(400, "UNSUPPORTED_AUTH: Codex Cockpit Lite 只支持 ChatGPT (OAuth) 登录")
+    if auth_data.get("auth_mode") != "chatgpt":
+        raise HTTPException(400, "Codex Cockpit Lite 只支持 ChatGPT 登录")
 
     # Extract email for dedup
     email = ""
     if "tokens" in auth_data and "id_token" in auth_data["tokens"]:
-        import jwt
-        try:
-            payload = jwt.decode(auth_data["tokens"]["id_token"], options={"verify_signature": False})
-            email = payload.get("email", "")
-        except Exception:
-            pass
-    if not email and "agent_identity" in auth_data:
-        email = auth_data["agent_identity"].get("email", "")
-
+        email = extract_email_from_id_token(auth_data["tokens"]["id_token"])
     if not name:
         name = email.split("@")[0] if email else "Codex Account"
 
@@ -170,7 +157,11 @@ async def import_account(req: Request):
 
 @router.post("/accounts/import-from-codex")
 async def import_from_codex(req: Request):
-    body = await req.json() if req.headers.get("content-type", "").startswith("application/json") else {}
+    body = (
+        await req.json()
+        if req.headers.get("content-type", "").startswith("application/json")
+        else {}
+    )
     force = body.get("force", False)
     home = Path.home()
     auth_path = home / ".codex" / "auth.json"
@@ -180,21 +171,16 @@ async def import_from_codex(req: Request):
     auth_json = auth_path.read_text()
     try:
         auth_data = json.loads(auth_json)
-    except json.JSONDecodeError as e:
-        raise HTTPException(400, f"Invalid auth.json: {e}")
+    except json.JSONDecodeError as error:
+        raise HTTPException(400, f"Invalid auth.json: {error}") from error
+
+    # Check auth mode before decoding identity fields or writing files.
+    if auth_data.get("auth_mode") != "chatgpt":
+        raise HTTPException(400, "Codex Cockpit Lite 只支持 ChatGPT 登录")
 
     email = ""
     if "tokens" in auth_data and "id_token" in auth_data["tokens"]:
-        import jwt
-        try:
-            payload = jwt.decode(auth_data["tokens"]["id_token"], options={"verify_signature": False})
-            email = payload.get("email", "")
-        except Exception:
-            pass
-
-    # Check auth mode BEFORE writing files
-    if (auth_data.get("auth_mode") or "").lower() != "chatgpt":
-        raise HTTPException(400, "UNSUPPORTED_AUTH: Codex Cockpit Lite 只支持 ChatGPT (OAuth) 登录")
+        email = extract_email_from_id_token(auth_data["tokens"]["id_token"])
 
     name = email.split("@")[0] if email else "Codex Account"
 
@@ -227,19 +213,19 @@ async def import_from_codex(req: Request):
 
 @router.delete("/accounts/{account_id}")
 async def delete_account(account_id: str):
-    logger.info(f"DELETE account {account_id}")
+    logger.info("DELETE account %s", account_id)
     ad = account_dir(account_id, _cd())
     if not ad.exists():
-        logger.warning(f"DELETE account {account_id}: not found at {ad}")
+        logger.warning("DELETE account %s: not found at %s", account_id, ad)
         raise HTTPException(404, f"账号 {account_id} 不存在或已被删除")
 
     shutil.rmtree(ad)
-    logger.info(f"DELETE account {account_id}: directory removed")
+    logger.info("DELETE account %s: directory removed", account_id)
 
     cfg = load_config(_cd())
     cfg.api.selected_accounts = [a for a in cfg.api.selected_accounts if a != account_id]
     save_config(cfg, _cd())
-    logger.info(f"DELETE account {account_id}: done")
+    logger.info("DELETE account %s: done", account_id)
 
     return {"ok": True}
 
@@ -262,12 +248,17 @@ async def toggle_account(account_id: str, req: Request):
 
 @router.post("/accounts/{account_id}/refresh")
 async def refresh_account(account_id: str):
+    if load_meta(account_id, _cd()) is None:
+        raise HTTPException(404, f"账号 {account_id} 不存在")
     try:
-        quota = await py_refresh_quota(account_id, _cd())
-        sub = await py_refresh_subscription(account_id, _cd())
+        await py_refresh_quota(account_id, _cd())
+        await py_refresh_subscription(account_id, _cd())
         meta = load_meta(account_id, _cd())
         if meta is None:
             raise HTTPException(404, f"账号 {account_id} 不存在")
         return meta.model_dump()
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception("刷新账号 %s 失败", account_id)
+        raise HTTPException(500, str(error)) from error
