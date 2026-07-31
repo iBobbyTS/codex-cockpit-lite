@@ -98,19 +98,6 @@ def frontend_dist_path() -> Path:
     return Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
 
-_FRONTEND_DIST = frontend_dist_path()
-if (_FRONTEND_DIST / "index.html").exists():
-    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        """Serve Svelte SPA — everything falls back to index.html."""
-        file_path = _FRONTEND_DIST / full_path
-        if file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(_FRONTEND_DIST / "index.html")
-
-
 def find_available_port(start_port: int, host: str = "127.0.0.1", max_attempts: int = 100) -> int:
     """Find the first available port starting from start_port."""
     for port in range(start_port, start_port + max_attempts):
@@ -190,6 +177,19 @@ async def post_backend_alpha_search(request: Request):
     from .proxy import proxy_alpha_search
 
     return await proxy_alpha_search(request, _config_dir)
+
+
+_FRONTEND_DIST = frontend_dist_path()
+if (_FRONTEND_DIST / "index.html").exists():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """Serve Svelte SPA after all API routes have had a chance to match."""
+        file_path = _FRONTEND_DIST / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(_FRONTEND_DIST / "index.html")
 
 
 async def _periodic_quota_refresh():

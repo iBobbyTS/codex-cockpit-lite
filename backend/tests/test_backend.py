@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import socket
 import sys
@@ -14,10 +15,12 @@ import pytest
 import uvicorn
 
 import codex_cockpit_lite.main as main_module
+import codex_cockpit_lite.proxy as proxy_module
 import codex_cockpit_lite.status as status_module
 from codex_cockpit_lite.api import get_config_dir_info, set_api_config_dir
 from codex_cockpit_lite.auth import (
     _token_expired,
+    build_auth_headers,
     parse_auth_file,
     validate_chatgpt_auth,
 )
@@ -40,6 +43,10 @@ from codex_cockpit_lite.models import (
     SpeedMode,
 )
 from codex_cockpit_lite.proxy import (
+    _build_downstream_headers,
+    _build_upstream_headers,
+    _stream_upstream_response,
+    _with_original_query,
     activate_account,
     get_active_account,
     is_account_schedulable,
@@ -126,6 +133,93 @@ def test_parse_chatgpt_auth_file() -> None:
     auth = parse_auth_file(chatgpt_auth())
     validate_chatgpt_auth(auth)
     assert auth.tokens is not None
+
+
+def test_auth_headers_include_codex_oauth_context(tmp_path: Path) -> None:
+    account_path = tmp_path / "accounts" / "account-1"
+    account_path.mkdir(parents=True)
+    (account_path / "auth.json").write_text(json.dumps(chatgpt_auth()))
+
+    headers = build_auth_headers("account-1", tmp_path)
+
+    assert headers["Authorization"].startswith("Bearer ")
+    assert headers["ChatGPT-Account-Id"] == "account-1"
+    assert "Originator" not in headers
+
+
+def test_upstream_headers_replace_case_variant_auth_without_duplicates() -> None:
+    headers = _build_upstream_headers(
+        {
+            "authorization": "Bearer inbound",
+            "originator": "Codex Desktop",
+            "content-length": "42",
+            "x-openai-internal-codex-responses-lite": "true",
+        },
+        {
+            "Authorization": "Bearer selected-account",
+            "ChatGPT-Account-Id": "account-1",
+        },
+    )
+
+    assert headers["authorization"] == "Bearer selected-account"
+    assert headers["chatgpt-account-id"] == "account-1"
+    assert headers["originator"] == "Codex Desktop"
+    assert headers["x-openai-internal-codex-responses-lite"] == "true"
+    assert "content-length" not in headers
+    assert len([name for name in headers if name.lower() == "authorization"]) == 1
+    assert len([name for name in headers if name.lower() == "originator"]) == 1
+
+
+def test_decoded_downstream_headers_drop_stale_transport_metadata() -> None:
+    headers = _build_downstream_headers(
+        httpx.Headers(
+            {
+                "Content-Encoding": "gzip",
+                "Content-Length": "123",
+                "Transfer-Encoding": "chunked",
+                "X-Request-Id": "request-1",
+            }
+        ),
+        decoded=True,
+    )
+
+    assert headers == {"x-request-id": "request-1"}
+
+
+def test_upstream_url_preserves_client_query() -> None:
+    request = httpx.Request("GET", "http://127.0.0.1:8844/v1/models?client_version=0.146.0")
+
+    result = _with_original_query(request, "https://chatgpt.com/backend-api/codex/models")
+
+    assert result == "https://chatgpt.com/backend-api/codex/models?client_version=0.146.0"
+
+
+@pytest.mark.asyncio
+async def test_streaming_keeps_raw_encoding_and_closes_upstream() -> None:
+    class FakeResponse:
+        closed = False
+
+        async def aiter_raw(self):
+            yield b"compressed-"
+            yield b"bytes"
+
+        async def aclose(self):
+            self.closed = True
+
+    class FakeClient:
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    response = FakeResponse()
+    client = FakeClient()
+
+    chunks = [chunk async for chunk in _stream_upstream_response(response, client)]
+
+    assert chunks == [b"compressed-", b"bytes"]
+    assert response.closed is True
+    assert client.closed is True
 
 
 @pytest.mark.parametrize(
@@ -392,6 +486,146 @@ def test_frontend_dist_path_in_source() -> None:
 def test_frontend_dist_path_when_frozen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
     assert frontend_dist_path() == tmp_path / "frontend" / "dist"
+
+
+@pytest.mark.asyncio
+async def test_models_api_route_precedes_spa_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_proxy_models(request, config_dir):
+        del request, config_dir
+        return main_module.JSONResponse({"object": "list", "data": []})
+
+    monkeypatch.setattr(proxy_module, "proxy_models", fake_proxy_models)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/models")
+
+    assert response.status_code == 200
+    assert response.json() == {"object": "list", "data": []}
+
+
+@pytest.mark.asyncio
+async def test_responses_use_chatgpt_codex_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_proxy(request, upstream_url, config_dir=None, is_sse=False, max_retries=8):
+        del request, config_dir, max_retries
+        captured.update(upstream_url=upstream_url, is_sse=is_sse)
+        return main_module.Response(status_code=204)
+
+    monkeypatch.setattr(proxy_module, "_proxy_with_retry", fake_proxy)
+
+    response = await proxy_module.proxy_responses(object())
+
+    assert response.status_code == 204
+    assert captured == {
+        "upstream_url": "https://chatgpt.com/backend-api/codex/responses",
+        "is_sse": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_models_use_chatgpt_codex_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_proxy(request, upstream_url, config_dir=None, is_sse=False, max_retries=8):
+        del request, config_dir, max_retries
+        captured.update(upstream_url=upstream_url, is_sse=is_sse)
+        return main_module.Response(status_code=204)
+
+    monkeypatch.setattr(proxy_module, "_proxy_with_retry", fake_proxy)
+
+    response = await proxy_module.proxy_models(object())
+
+    assert response.status_code == 204
+    assert captured == {
+        "upstream_url": "https://chatgpt.com/backend-api/codex/models",
+        "is_sse": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("proxy_name", "expected_path"),
+    [
+        ("proxy_images_generations", "images/generations"),
+        ("proxy_images_edits", "images/edits"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_images_use_chatgpt_codex_upstream(
+    monkeypatch: pytest.MonkeyPatch, proxy_name: str, expected_path: str
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_proxy(request, upstream_url, config_dir=None, is_sse=False, max_retries=8):
+        del request, config_dir, max_retries
+        captured.update(upstream_url=upstream_url, is_sse=is_sse)
+        return main_module.Response(status_code=204)
+
+    monkeypatch.setattr(proxy_module, "_proxy_with_retry", fake_proxy)
+
+    response = await getattr(proxy_module, proxy_name)(object())
+
+    assert response.status_code == 204
+    assert captured == {
+        "upstream_url": f"https://chatgpt.com/backend-api/codex/{expected_path}",
+        "is_sse": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_alpha_search_drops_stale_decoded_encoding_headers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    content = b'{"output":"ok"}'
+
+    class FakeRequest:
+        async def body(self) -> bytes:
+            return b'{"model":"gpt-5.6-terra","commands":{}}'
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            del exc_type, exc, traceback
+
+        async def post(self, url, *, content, headers):
+            assert url == "https://chatgpt.com/backend-api/codex/alpha/search"
+            assert content == b'{"model":"gpt-5.6-terra","commands":{}}'
+            assert headers["Content-Type"] == "application/json"
+            return httpx.Response(
+                200,
+                content=gzip.compress(content_bytes),
+                headers={
+                    "Content-Encoding": "gzip",
+                    "Content-Length": "123",
+                    "X-Request-Id": "search-request-1",
+                },
+            )
+
+    content_bytes = content
+    monkeypatch.setattr(
+        proxy_module,
+        "get_active_account",
+        lambda config_dir=None: {
+            "id": "account-1",
+            "email": "test@example.com",
+        },
+    )
+    monkeypatch.setattr(
+        proxy_module,
+        "build_search_headers",
+        lambda account_id, config_dir=None: {"Authorization": "Bearer test"},
+    )
+    monkeypatch.setattr(proxy_module.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+
+    response = await proxy_module.proxy_alpha_search(FakeRequest(), tmp_path)
+
+    assert response.status_code == 200
+    assert response.body == content
+    assert response.headers.get("content-encoding") is None
+    assert response.headers["content-length"] == str(len(content))
+    assert response.headers["x-request-id"] == "search-request-1"
 
 
 @pytest.mark.asyncio

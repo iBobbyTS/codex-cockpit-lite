@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 UPSTREAM_BASE = "https://api.openai.com"
 CHATGPT_BASE = "https://chatgpt.com"
+CODEX_UPSTREAM_BASE = f"{CHATGPT_BASE}/backend-api/codex"
 UPSTREAM_TIMEOUT = httpx.Timeout(60.0, connect=20.0)
 
 # Request counters
@@ -144,11 +145,72 @@ def get_active_index(config_dir: Path | None = None) -> int:
     )
 
 
+def _build_upstream_headers(
+    request_headers: dict[str, str], auth_headers: dict[str, str]
+) -> dict[str, str]:
+    """Overlay trusted auth without emitting case-variant duplicate headers."""
+    headers = {name.lower(): value for name, value in request_headers.items()}
+    for name in ("host", "connection", "transfer-encoding", "content-length"):
+        headers.pop(name, None)
+    headers.update({name.lower(): value for name, value in auth_headers.items()})
+    headers.setdefault("originator", "codex-tui")
+    return headers
+
+
+def _build_downstream_headers(upstream_headers: httpx.Headers, *, decoded: bool) -> dict[str, str]:
+    """Drop hop-by-hop headers and stale encoding metadata after decoding."""
+    excluded = {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+    if decoded:
+        excluded.update({"content-encoding", "content-length"})
+    return {name: value for name, value in upstream_headers.items() if name.lower() not in excluded}
+
+
+async def _stream_upstream_response(upstream_response: httpx.Response, client: httpx.AsyncClient):
+    """Forward undecoded bytes while keeping the upstream connection alive."""
+    try:
+        async for chunk in upstream_response.aiter_raw():
+            yield chunk
+    finally:
+        await upstream_response.aclose()
+        await client.aclose()
+
+
+async def _read_and_close_upstream(
+    upstream_response: httpx.Response, client: httpx.AsyncClient
+) -> bytes:
+    """Read a streamed response before closing its owning client."""
+    try:
+        return await upstream_response.aread()
+    finally:
+        await upstream_response.aclose()
+        await client.aclose()
+
+
+def _with_original_query(request: Request, upstream_url: str) -> str:
+    """Preserve client query parameters while keeping the upstream host fixed."""
+    query = request.url.query
+    if not query:
+        return upstream_url
+    if isinstance(query, bytes):
+        query = query.decode("ascii")
+    separator = "&" if "?" in upstream_url else "?"
+    return f"{upstream_url}{separator}{query}"
+
+
 async def proxy_responses(request: Request, config_dir: Path | None = None) -> Response:
     """Proxy /v1/responses with SSE streaming and auto-switch on 429."""
     return await _proxy_with_retry(
         request,
-        f"{UPSTREAM_BASE}/v1/responses",
+        f"{CODEX_UPSTREAM_BASE}/responses",
         config_dir,
         is_sse=True,
     )
@@ -158,7 +220,7 @@ async def proxy_responses_compact(request: Request, config_dir: Path | None = No
     """Proxy /v1/responses/compact."""
     return await _proxy_with_retry(
         request,
-        f"{UPSTREAM_BASE}/v1/responses/compact",
+        f"{CODEX_UPSTREAM_BASE}/responses/compact",
         config_dir,
         is_sse=True,
     )
@@ -178,7 +240,7 @@ async def proxy_models(request: Request, config_dir: Path | None = None) -> Resp
     """Proxy /v1/models."""
     return await _proxy_with_retry(
         request,
-        f"{UPSTREAM_BASE}/v1/models",
+        f"{CODEX_UPSTREAM_BASE}/models",
         config_dir,
     )
 
@@ -187,7 +249,7 @@ async def proxy_images_generations(request: Request, config_dir: Path | None = N
     """Proxy /v1/images/generations."""
     return await _proxy_with_retry(
         request,
-        f"{UPSTREAM_BASE}/v1/images/generations",
+        f"{CODEX_UPSTREAM_BASE}/images/generations",
         config_dir,
     )
 
@@ -196,7 +258,7 @@ async def proxy_images_edits(request: Request, config_dir: Path | None = None) -
     """Proxy /v1/images/edits."""
     return await _proxy_with_retry(
         request,
-        f"{UPSTREAM_BASE}/v1/images/edits",
+        f"{CODEX_UPSTREAM_BASE}/images/edits",
         config_dir,
     )
 
@@ -246,7 +308,7 @@ async def proxy_alpha_search(request: Request, config_dir: Path | None = None) -
         return Response(
             content=resp.content,
             status_code=resp.status_code,
-            headers=dict(resp.headers),
+            headers=_build_downstream_headers(resp.headers, decoded=True),
         )
     except httpx.HTTPError as error:
         duration_ms = int((time.time() - start) * 1000)
@@ -277,6 +339,7 @@ async def _proxy_with_retry(
     """Proxy a request to upstream, retrying with next account on 429 or rate-limit."""
     cfg = load_config(config_dir)
     auto_switch = cfg.api.auto_switch
+    upstream_url = _with_original_query(request, upstream_url)
 
     for attempt in range(max_retries + 1):
         account = get_active_account(config_dir)
@@ -301,35 +364,27 @@ async def _proxy_with_retry(
 
         # Forward request
         body = await request.body()
-        req_headers = dict(request.headers)
-        # Remove hop-by-hop headers
-        for h in ["host", "connection", "transfer-encoding", "content-length"]:
-            req_headers.pop(h, None)
-        # Override with our auth headers
-        req_headers.update(headers)
+        req_headers = _build_upstream_headers(dict(request.headers), headers)
 
         start = time.time()
+        client: httpx.AsyncClient | None = None
         try:
-            async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
-                if is_sse:
-                    # For SSE, stream the response
-                    upstream_req = client.build_request(
-                        method=request.method,
-                        url=upstream_url,
-                        content=body,
-                        headers=req_headers,
-                    )
-                    upstream_resp = await client.send(
-                        upstream_req,
-                        stream=True,
-                    )
-                else:
-                    upstream_resp = await client.request(
-                        method=request.method,
-                        url=upstream_url,
-                        content=body,
-                        headers=req_headers,
-                    )
+            client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
+            if is_sse:
+                upstream_req = client.build_request(
+                    method=request.method,
+                    url=upstream_url,
+                    content=body,
+                    headers=req_headers,
+                )
+                upstream_resp = await client.send(upstream_req, stream=True)
+            else:
+                upstream_resp = await client.request(
+                    method=request.method,
+                    url=upstream_url,
+                    content=body,
+                    headers=req_headers,
+                )
 
             duration_ms = int((time.time() - start) * 1000)
 
@@ -356,12 +411,23 @@ async def _proxy_with_retry(
                     attempt + 1,
                 )
                 if auto_switch.enabled and attempt < max_retries:
+                    if is_sse:
+                        await _read_and_close_upstream(upstream_resp, client)
+                    else:
+                        await client.aclose()
                     switch_to_next_account(config_dir)
                     continue
+                content = (
+                    await _read_and_close_upstream(upstream_resp, client)
+                    if is_sse
+                    else upstream_resp.content
+                )
+                if not is_sse:
+                    await client.aclose()
                 return Response(
-                    content=upstream_resp.content,
+                    content=content,
                     status_code=429,
-                    headers=dict(upstream_resp.headers),
+                    headers=_build_downstream_headers(upstream_resp.headers, decoded=True),
                 )
 
             # Check rate-limit headers for proactive switching
@@ -374,6 +440,10 @@ async def _proxy_with_retry(
                             "Account %s tokens exhausted, switching...",
                             account["email"],
                         )
+                        if is_sse:
+                            await _read_and_close_upstream(upstream_resp, client)
+                        else:
+                            await client.aclose()
                         switch_to_next_account(config_dir)
                         continue
                 except ValueError:
@@ -381,19 +451,23 @@ async def _proxy_with_retry(
 
             if is_sse:
                 return StreamingResponse(
-                    upstream_resp.aiter_bytes(),
+                    _stream_upstream_response(upstream_resp, client),
                     status_code=upstream_resp.status_code,
-                    headers=dict(upstream_resp.headers),
+                    headers=_build_downstream_headers(upstream_resp.headers, decoded=False),
                     media_type="text/event-stream",
                 )
             else:
+                content = upstream_resp.content
+                await client.aclose()
                 return Response(
-                    content=upstream_resp.content,
+                    content=content,
                     status_code=upstream_resp.status_code,
-                    headers=dict(upstream_resp.headers),
+                    headers=_build_downstream_headers(upstream_resp.headers, decoded=True),
                 )
 
         except (httpx.ConnectError, httpx.TimeoutException) as e:
+            if client is not None:
+                await client.aclose()
             duration_ms = int((time.time() - start) * 1000)
             record_request(
                 {

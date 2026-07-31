@@ -46,7 +46,10 @@ def build_auth_headers(account_id: str, config_dir: Path | None = None) -> dict[
     if _token_expired(access_token):
         access_token = _refresh_oauth_token(tokens, account_id, config_dir)
 
-    return {"Authorization": f"Bearer {access_token}"}
+    headers = {"Authorization": f"Bearer {access_token}"}
+    if tokens.account_id:
+        headers["ChatGPT-Account-Id"] = tokens.account_id
+    return headers
 
 
 def build_search_headers(account_id: str, config_dir: Path | None = None) -> dict[str, str]:
