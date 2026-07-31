@@ -75,7 +75,7 @@ def test_default_config(tmp_path: Path) -> None:
     assert cfg.version == 1
     assert cfg.api.port == 8844
     assert cfg.api.speed == SpeedMode.STANDARD
-    assert cfg.api.password == "sandrone"
+    assert cfg.api.api_key == "sandrone"
     assert cfg.api.account_order == []
     assert cfg.api.selected_accounts == []
     assert cfg.api.auto_switch.enabled is True
@@ -85,13 +85,35 @@ def test_save_and_reload_config(tmp_path: Path) -> None:
     cfg = load_config(tmp_path)
     cfg.api.port = 9999
     cfg.api.speed = SpeedMode.FAST
-    cfg.api.password = "changed-password"
+    cfg.api.api_key = "changed-api-key"
     save_config(cfg, tmp_path)
 
     reloaded = load_config(tmp_path)
     assert reloaded.api.port == 9999
     assert reloaded.api.speed == SpeedMode.FAST
-    assert reloaded.api.password == "changed-password"
+    assert reloaded.api.api_key == "changed-api-key"
+
+
+def test_legacy_password_config_migrates_to_api_key(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "api": {
+                    "password": "legacy-key",
+                },
+            }
+        )
+    )
+
+    cfg = load_config(tmp_path)
+    saved = json.loads(path.read_text())
+
+    assert cfg.api.api_key == "legacy-key"
+    assert saved["api"]["api_key"] == "legacy-key"
+    assert "password" not in saved["api"]
 
 
 def test_config_dir_endpoint_reports_backend_path(tmp_path: Path) -> None:
@@ -492,18 +514,81 @@ def test_frontend_dist_path_when_frozen(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_models_api_route_precedes_spa_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_models_api_route_precedes_spa_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     async def fake_proxy_models(request, config_dir):
         del request, config_dir
         return main_module.JSONResponse({"object": "list", "data": []})
 
     monkeypatch.setattr(proxy_module, "proxy_models", fake_proxy_models)
+    monkeypatch.setattr(main_module, "_config_dir", tmp_path)
+    save_config(AppConfig(api=ApiConfig(api_key="route-key")), tmp_path)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/v1/models")
+        response = await client.get("/v1/models", headers={"Authorization": "Bearer route-key"})
 
     assert response.status_code == 200
     assert response.json() == {"object": "list", "data": []}
+
+
+@pytest.mark.asyncio
+async def test_served_api_accepts_only_configured_original_protocol_key_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    proxy_calls = 0
+
+    async def fake_proxy_models(request, config_dir):
+        nonlocal proxy_calls
+        del request, config_dir
+        proxy_calls += 1
+        return main_module.JSONResponse({"object": "list", "data": []})
+
+    monkeypatch.setattr(proxy_module, "proxy_models", fake_proxy_models)
+    monkeypatch.setattr(main_module, "_config_dir", tmp_path)
+    save_config(AppConfig(api=ApiConfig(api_key="only-this-key")), tmp_path)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        responses = [
+            await client.get("/v1/models"),
+            await client.get("/v1/models", headers={"Authorization": "Bearer wrong-key"}),
+            await client.get("/v1/models", headers={"X-API-Key": "wrong-key"}),
+        ]
+        bearer = await client.get("/v1/models", headers={"Authorization": "Bearer only-this-key"})
+        x_api_key = await client.get("/v1/models", headers={"X-API-Key": "only-this-key"})
+
+    assert [response.status_code for response in responses] == [401, 401, 401]
+    assert all(response.json() == {"error": {"message": "Unauthorized"}} for response in responses)
+    assert bearer.status_code == 200
+    assert x_api_key.status_code == 200
+    assert proxy_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_configured_api_key_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(main_module, "_config_dir", tmp_path)
+    save_config(AppConfig(api=ApiConfig(api_key="")), tmp_path)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/models", headers={"X-API-Key": ""})
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_backend_search_alias_requires_api_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(main_module, "_config_dir", tmp_path)
+    save_config(AppConfig(api=ApiConfig(api_key="search-key")), tmp_path)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/backend-api/codex/alpha/search", json={})
+
+    assert response.status_code == 401
+    assert response.json() == {"error": {"message": "Unauthorized"}}
 
 
 @pytest.mark.asyncio

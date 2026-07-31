@@ -44,8 +44,14 @@ def load_config(config_dir: Path | None = None) -> AppConfig:
     try:
         raw = json.loads(path.read_text())
         config = AppConfig(**raw)
-        auto_switch = (raw.get("api") or {}).get("auto_switch") or {}
-        if isinstance(auto_switch, dict) and "quota_threshold_percent" in auto_switch:
+        raw_api = raw.get("api") or {}
+        auto_switch = raw_api.get("auto_switch") or {}
+        uses_legacy_password = (
+            isinstance(raw_api, dict) and "api_key" not in raw_api and "password" in raw_api
+        )
+        if (
+            isinstance(auto_switch, dict) and "quota_threshold_percent" in auto_switch
+        ) or uses_legacy_password:
             save_config(config, config_dir)
         return config
     except (OSError, json.JSONDecodeError, ValidationError) as error:

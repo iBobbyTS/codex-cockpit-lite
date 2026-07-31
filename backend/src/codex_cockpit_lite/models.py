@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class AuthMode(StrEnum):
@@ -24,7 +24,10 @@ class ApiConfig(BaseModel):
     port: int = 8844
     bind_host: str = "127.0.0.1"
     speed: SpeedMode = SpeedMode.STANDARD
-    password: str = "sandrone"
+    api_key: str = Field(
+        default="sandrone",
+        validation_alias=AliasChoices("api_key", "password"),
+    )
     account_order: list[str] = Field(default_factory=list)
     selected_accounts: list[str] = Field(default_factory=list)
     auto_switch: AutoSwitchConfig = Field(default_factory=lambda: AutoSwitchConfig())

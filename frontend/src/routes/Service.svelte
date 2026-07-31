@@ -35,7 +35,7 @@
         port: config.api.port,
         bind_host: config.api.bind_host,
         speed: config.api.speed,
-        password: config.api.password ?? 'sandrone',
+        api_key: config.api.api_key ?? 'sandrone',
       };
     } catch (error) {
       errorMsg = '读取配置失败: ' + String(error);
@@ -93,7 +93,7 @@
         port: serviceDraft.port,
         bind_host: serviceDraft.bind_host,
         speed: serviceDraft.speed,
-        password: serviceDraft.password,
+        api_key: serviceDraft.api_key,
       },
     };
     const saved = await saveConfig(nextConfig, 'API 服务设置已保存', '保存 API 服务设置失败');
@@ -123,7 +123,7 @@
   }
 
   function copyPassword() {
-    return copyValue(config?.api.password ?? 'sandrone', 'API Key 已复制', '复制 API Key 失败');
+    return copyValue(config?.api.api_key ?? 'sandrone', 'API Key 已复制', '复制 API Key 失败');
   }
 
   $effect(() => {
@@ -196,7 +196,7 @@
       </div>
       <div class="copyable-value">
         <span class="label">API Key:</span>
-        <code>{config?.api.password ?? 'sandrone'}</code>
+        <code>{config?.api.api_key ?? 'sandrone'}</code>
         <button aria-label="复制 API Key" onclick={copyPassword} disabled={!config}>复制</button>
       </div>
     </div>
@@ -232,7 +232,7 @@
           </label>
           <label>
             API Key
-            <input type="text" bind:value={serviceDraft.password} />
+            <input type="text" bind:value={serviceDraft.api_key} />
           </label>
         </div>
       {/if}

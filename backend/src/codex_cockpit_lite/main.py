@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import router as api_router
 from .api import set_api_config_dir
+from .api_key_auth import has_valid_api_key, requires_api_key
 from .config import ensure_config_dir, get_config_dir, load_config, save_config
 from .status import router as status_router
 from .status import set_actual_port, set_bind_host, set_config_dir
@@ -70,6 +71,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def authenticate_served_api(request: Request, call_next):
+    """Allow service traffic only with the configured API key."""
+    if requires_api_key(request):
+        configured_api_key = load_config(_config_dir).api.api_key
+        if not has_valid_api_key(request, configured_api_key):
+            return JSONResponse(
+                {"error": {"message": "Unauthorized"}},
+                status_code=401,
+            )
+    return await call_next(request)
+
 
 app.include_router(status_router)
 app.include_router(api_router)

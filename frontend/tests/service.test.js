@@ -12,7 +12,7 @@ function config() {
       port: 8844,
       bind_host: '127.0.0.1',
       speed: 'standard',
-      password: 'sandrone',
+      api_key: 'sandrone',
       selected_accounts: [],
       auto_switch: {
         enabled: true,
@@ -79,12 +79,12 @@ test('显示并保存 API 服务设置', async () => {
   expect(screen.getByRole('combobox', { name: '绑定地址' }).value).toBe('127.0.0.1');
   const speed = screen.getByRole('combobox', { name: '默认速度' });
   expect(speed.value).toBe('standard');
-  const password = screen.getByRole('textbox', { name: 'API Key' });
-  expect(password.type).toBe('text');
-  expect(password.value).toBe('sandrone');
+  const apiKey = screen.getByRole('textbox', { name: 'API Key' });
+  expect(apiKey.type).toBe('text');
+  expect(apiKey.value).toBe('sandrone');
 
   await fireEvent.change(speed, { target: { value: 'fast' } });
-  await fireEvent.input(password, { target: { value: 'visible-password' } });
+  await fireEvent.input(apiKey, { target: { value: 'visible-api-key' } });
 
   expect(apiClient.mock.calls.filter(([method]) => method === 'PUT')).toHaveLength(0);
   await fireEvent.click(screen.getByRole('button', { name: '保存' }));
@@ -95,7 +95,7 @@ test('显示并保存 API 服务设置', async () => {
       'PUT',
       '/api/config',
       expect.objectContaining({
-        api: expect.objectContaining({ speed: 'fast', password: 'visible-password' }),
+        api: expect.objectContaining({ speed: 'fast', api_key: 'visible-api-key' }),
       }),
     );
   });
