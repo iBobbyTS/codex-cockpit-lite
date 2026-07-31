@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hmac
 import logging
+import secrets
 import socket
 import sys
 from collections.abc import AsyncIterator
@@ -14,7 +16,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .api import router as api_router
@@ -27,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 _config_dir: Path = get_config_dir()
 _actual_port: int = 0
+_shutdown_token = secrets.token_urlsafe(32)
+_CONTROL_HEADER = "X-Codex-Cockpit-Control"
 
 
 @asynccontextmanager
@@ -56,6 +60,7 @@ class CockpitServer(uvicorn.Server):
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
         await super().startup(sockets=sockets)
         if self.started and _actual_port > 0:
+            print(f"CONTROL={_shutdown_token}", flush=True)
             print(f"PORT={_actual_port}", flush=True)
 
 
@@ -68,6 +73,20 @@ app.add_middleware(
 
 app.include_router(status_router)
 app.include_router(api_router)
+
+
+@app.post("/api/cockpit/shutdown", include_in_schema=False)
+async def shutdown_backend(request: Request) -> Response:
+    """Stop this backend only when called by the parent Tauri process."""
+    supplied_token = request.headers.get(_CONTROL_HEADER)
+    if supplied_token is None or not hmac.compare_digest(supplied_token, _shutdown_token):
+        return Response(status_code=404)
+
+    server = getattr(request.app.state, "backend_server", None)
+    if server is None:
+        return Response(status_code=404)
+    server.should_exit = True
+    return Response(status_code=204)
 
 
 # Serve Svelte frontend static files
@@ -246,6 +265,7 @@ def main():
     server = CockpitServer(
         uvicorn.Config(app, host=host, port=actual_port, log_level=args.log_level)
     )
+    app.state.backend_server = server
     server.run()
 
 

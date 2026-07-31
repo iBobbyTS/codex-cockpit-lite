@@ -38,7 +38,7 @@ def sidecar_path() -> Path:
     return BINARIES / f"codex-cockpit-backend-{target}{suffix}"
 
 
-def read_port(process: subprocess.Popen[str], timeout: float = 15) -> int:
+def read_protocol(process: subprocess.Popen[str], timeout: float = 15) -> tuple[int, str]:
     assert process.stdout is not None
     lines: queue.Queue[str] = queue.Queue()
 
@@ -48,6 +48,8 @@ def read_port(process: subprocess.Popen[str], timeout: float = 15) -> int:
 
     threading.Thread(target=reader, daemon=True).start()
     deadline = time.monotonic() + timeout
+    port: int | None = None
+    control_token: str | None = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
             stderr = process.stderr.read() if process.stderr else ""
@@ -56,14 +58,72 @@ def read_port(process: subprocess.Popen[str], timeout: float = 15) -> int:
             line = lines.get(timeout=0.1).strip()
         except queue.Empty:
             continue
-        if line.startswith("PORT="):
-            return int(line.removeprefix("PORT="))
-    raise TimeoutError("等待 sidecar PORT 协议超时")
+        if line.startswith("CONTROL="):
+            control_token = line.removeprefix("CONTROL=")
+        elif line.startswith("PORT="):
+            port = int(line.removeprefix("PORT="))
+        if port is not None and control_token:
+            return port, control_token
+    raise TimeoutError("等待 sidecar CONTROL/PORT 协议超时")
 
 
 def fetch(url: str) -> tuple[int, bytes, str]:
     with urllib.request.urlopen(url, timeout=5) as response:
         return response.status, response.read(), response.headers.get_content_type()
+
+
+def request_shutdown(port: int, control_token: str) -> int:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/cockpit/shutdown",
+        data=b"",
+        headers={"X-Codex-Cockpit-Control": control_token},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return response.status
+
+
+def descendant_pids(root_pid: int) -> set[int]:
+    if os.name != "posix":
+        return set()
+    output = subprocess.run(
+        ["ps", "-axo", "pid=,ppid="],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    children: dict[int, set[int]] = {}
+    for line in output.splitlines():
+        pid_text, parent_text = line.split()
+        children.setdefault(int(parent_text), set()).add(int(pid_text))
+
+    descendants: set[int] = set()
+    pending = list(children.get(root_pid, set()))
+    while pending:
+        pid = pending.pop()
+        if pid in descendants:
+            continue
+        descendants.add(pid)
+        pending.extend(children.get(pid, set()))
+    return descendants
+
+
+def assert_processes_exited(pids: set[int]) -> None:
+    deadline = time.monotonic() + 5
+    remaining = set(pids)
+    while remaining and time.monotonic() < deadline:
+        alive: set[int] = set()
+        for pid in remaining:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                continue
+            alive.add(pid)
+        remaining = alive
+        if remaining:
+            time.sleep(0.1)
+    if remaining:
+        raise AssertionError(f"sidecar 内层进程仍在运行: {sorted(remaining)}")
 
 
 def assert_port_released(port: int) -> None:
@@ -121,9 +181,13 @@ def main() -> None:
                 text=True,
             )
             actual_port = 0
+            inner_pids: set[int] = set()
             try:
-                actual_port = read_port(process)
+                actual_port, control_token = read_protocol(process)
                 assert actual_port > requested_port
+                inner_pids = descendant_pids(process.pid)
+                if os.name == "posix":
+                    assert inner_pids, "未检测到 PyInstaller one-file 内层进程"
 
                 base = f"http://127.0.0.1:{actual_port}"
                 status_code, status_body, _ = fetch(f"{base}/v1/cockpit/status")
@@ -137,15 +201,21 @@ def main() -> None:
                 assert root_status == 200
                 assert content_type == "text/html"
                 assert b"Codex Cockpit Lite" in root_body
+
+                assert request_shutdown(actual_port, control_token) == 204
+                process.wait(timeout=5)
+                assert process.returncode == 0
             finally:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
         if actual_port:
             assert_port_released(actual_port)
+        assert_processes_exited(inner_pids)
         print(f"Sidecar smoke test passed on dynamic port {actual_port}")
 
 

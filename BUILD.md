@@ -94,7 +94,12 @@ python3 scripts/check.py
 ```
 
 sidecar 冒烟测试会使用临时配置目录，验证 status、config、WebUI、端口占用自动递增，
-并确认终止后端口释放。它不会读写真实的 `~/.config/codex-cockpit`。
+再通过 Tauri 使用的内部 `CONTROL` 令牌关闭 Uvicorn，并确认 PyInstaller one-file 的内外
+两层进程均退出、端口释放。它不会读写真实的 `~/.config/codex-cockpit`。
+
+Tauri 退出时必须先调用后端的令牌化优雅关闭端点，等待 sidecar 自行结束；不要直接对
+PyInstaller 外层 bootloader 调用 Unix `SIGKILL`，否则内层 Python 进程会脱离并继续监听。
+优雅关闭超时后的 fallback 只能针对保存的精确子进程句柄/PID，禁止按进程名扫描或 `pkill`。
 
 macOS 最终 bundle 还应直接验证 Tauri 重签后的 sidecar，防止代码签名改变运行行为：
 

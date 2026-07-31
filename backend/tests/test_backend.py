@@ -201,11 +201,57 @@ async def test_port_protocol_is_announced_after_uvicorn_listener_startup(
     monkeypatch.setattr(uvicorn.Server, "startup", fake_startup)
     monkeypatch.setattr("builtins.print", fake_print)
     monkeypatch.setattr(main_module, "_actual_port", 18844)
+    monkeypatch.setattr(main_module, "_shutdown_token", "test-control-token")
     server = main_module.CockpitServer(uvicorn.Config(app, port=18844))
 
     await server.startup()
 
-    assert events == ["listener-ready", "PORT=18844"]
+    assert events == [
+        "listener-ready",
+        "CONTROL=test-control-token",
+        "PORT=18844",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_endpoint_requires_exact_control_token() -> None:
+    class FakeServer:
+        should_exit = False
+
+    fake_server = FakeServer()
+    app.state.backend_server = fake_server
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        missing = await client.post("/api/cockpit/shutdown")
+        invalid = await client.post(
+            "/api/cockpit/shutdown",
+            headers={"X-Codex-Cockpit-Control": "wrong-token"},
+        )
+
+    assert missing.status_code == 404
+    assert invalid.status_code == 404
+    assert fake_server.should_exit is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_endpoint_stops_server_with_exact_control_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeServer:
+        should_exit = False
+
+    fake_server = FakeServer()
+    app.state.backend_server = fake_server
+    monkeypatch.setattr(main_module, "_shutdown_token", "test-control-token")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/cockpit/shutdown",
+            headers={"X-Codex-Cockpit-Control": "test-control-token"},
+        )
+
+    assert response.status_code == 204
+    assert fake_server.should_exit is True
 
 
 @pytest.mark.asyncio

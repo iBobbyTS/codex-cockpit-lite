@@ -11,11 +11,14 @@ use tauri_plugin_shell::ShellExt;
 
 const BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKEND_STOP_TIMEOUT: Duration = Duration::from_secs(3);
+const BACKEND_SHUTDOWN_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+const CONTROL_HEADER: &str = "X-Codex-Cockpit-Control";
 const STDERR_LINES: usize = 20;
 
 #[derive(Default)]
 struct BackendInner {
     port: Option<u16>,
+    control_token: Option<String>,
     error: Option<String>,
     child: Option<CommandChild>,
     terminated: bool,
@@ -55,6 +58,11 @@ fn log_line(message: &str) {
 
 fn parse_port_line(line: &str) -> Option<u16> {
     line.strip_prefix("PORT=")?.trim().parse().ok()
+}
+
+fn parse_control_line(line: &str) -> Option<String> {
+    let token = line.strip_prefix("CONTROL=")?.trim();
+    (!token.is_empty()).then(|| token.to_owned())
 }
 
 fn error_detail(status: u16, body: &str) -> String {
@@ -100,6 +108,8 @@ async fn start_backend(app: AppHandle) {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         inner.child = Some(child);
+        inner.port = None;
+        inner.control_token = None;
         inner.terminated = false;
         inner.stopping = false;
         inner.error = None;
@@ -108,16 +118,24 @@ async fn start_backend(app: AppHandle) {
     while let Some(event) = events.recv().await {
         match event {
             CommandEvent::Stdout(bytes) => {
-                let line = String::from_utf8_lossy(&bytes);
-                if let Some(port) = parse_port_line(line.trim()) {
-                    let state = app.state::<BackendState>();
-                    let mut inner = state
-                        .inner
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner());
-                    inner.port = Some(port);
-                    inner.error = None;
-                    log_line(&format!("[cockpit] Backend ready on port {port}"));
+                for line in String::from_utf8_lossy(&bytes).lines() {
+                    if let Some(token) = parse_control_line(line.trim()) {
+                        let state = app.state::<BackendState>();
+                        let mut inner = state
+                            .inner
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner());
+                        inner.control_token = Some(token);
+                    } else if let Some(port) = parse_port_line(line.trim()) {
+                        let state = app.state::<BackendState>();
+                        let mut inner = state
+                            .inner
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner());
+                        inner.port = Some(port);
+                        inner.error = None;
+                        log_line(&format!("[cockpit] Backend ready on port {port}"));
+                    }
                 }
             }
             CommandEvent::Stderr(bytes) => {
@@ -168,32 +186,90 @@ async fn start_backend(app: AppHandle) {
     }
 }
 
+fn request_shutdown(port: u16, control_token: &str) -> Result<(), String> {
+    let agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(BACKEND_SHUTDOWN_REQUEST_TIMEOUT))
+        .build()
+        .new_agent();
+    let url = format!("http://127.0.0.1:{port}/api/cockpit/shutdown");
+    let response = agent
+        .post(&url)
+        .header(CONTROL_HEADER, control_token)
+        .send_empty()
+        .map_err(|error| format!("请求后端优雅退出失败: {error}"))?;
+    if response.status().as_u16() != 204 {
+        return Err(format!(
+            "后端拒绝优雅退出，状态码: {}",
+            response.status().as_u16()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn terminate_exact_child(child: CommandChild) -> Result<(), String> {
+    let pid = child.pid();
+    // SAFETY: `pid` comes from the still-owned CommandChild, and SIGTERM does not
+    // dereference memory. PyInstaller's outer bootloader forwards it to its child.
+    let result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().to_string())
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_exact_child(child: CommandChild) -> Result<(), String> {
+    child.kill().map_err(|error| error.to_string())
+}
+
 fn stop_backend(app: &AppHandle) {
     let state = app.state::<BackendState>();
-    let child = {
+    let shutdown_target = {
         let mut inner = state
             .inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        inner.stopping = true;
-        inner.child.take()
-    };
-
-    if let Some(child) = child {
-        log_line("[cockpit] Stopping backend sidecar");
-        if let Err(error) = child.kill() {
-            log_line(&format!(
-                "[cockpit] Failed to kill backend sidecar: {error}"
-            ));
+        if inner.stopping || inner.child.is_none() {
             return;
         }
-        let inner = state
-            .inner
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let _ = state
-            .terminated
-            .wait_timeout_while(inner, BACKEND_STOP_TIMEOUT, |value| !value.terminated);
+        inner.stopping = true;
+        inner.port.zip(inner.control_token.clone())
+    };
+
+    log_line("[cockpit] Stopping backend sidecar");
+    if let Some((port, control_token)) = shutdown_target {
+        if let Err(error) = request_shutdown(port, &control_token) {
+            log_line(&format!("[cockpit] {error}"));
+        }
+    } else {
+        log_line("[cockpit] Backend control protocol was not ready before shutdown");
+    }
+
+    let inner = state
+        .inner
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let (mut inner, _) = state
+        .terminated
+        .wait_timeout_while(inner, BACKEND_STOP_TIMEOUT, |value| !value.terminated)
+        .unwrap_or_else(|poison| poison.into_inner());
+    if inner.terminated {
+        log_line("[cockpit] Backend sidecar stopped gracefully");
+        return;
+    }
+
+    let child = inner.child.take();
+    drop(inner);
+    if let Some(child) = child {
+        log_line("[cockpit] Backend graceful shutdown timed out; terminating exact sidecar PID");
+        if let Err(error) = terminate_exact_child(child) {
+            log_line(&format!(
+                "[cockpit] Failed to terminate backend sidecar: {error}"
+            ));
+        }
     }
 }
 
@@ -205,7 +281,7 @@ fn wait_for_backend(state: &BackendState) -> Result<u16, String> {
                 .inner
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
-            if let Some(port) = inner.port {
+            if let (Some(port), Some(_)) = (inner.port, inner.control_token.as_ref()) {
                 return Ok(port);
             }
             if let Some(error) = &inner.error {
@@ -319,7 +395,13 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{error_detail, parse_port_line, wait_for_backend, BackendState};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    use super::{
+        error_detail, parse_control_line, parse_port_line, request_shutdown, wait_for_backend,
+        BackendState,
+    };
 
     #[test]
     fn parses_only_valid_port_protocol_lines() {
@@ -327,6 +409,16 @@ mod tests {
         assert_eq!(parse_port_line("PORT=0"), Some(0));
         assert_eq!(parse_port_line("port=8844"), None);
         assert_eq!(parse_port_line("PORT=70000"), None);
+    }
+
+    #[test]
+    fn parses_only_non_empty_control_protocol_lines() {
+        assert_eq!(
+            parse_control_line("CONTROL=secret-token"),
+            Some("secret-token".to_owned())
+        );
+        assert_eq!(parse_control_line("CONTROL="), None);
+        assert_eq!(parse_control_line("control=secret-token"), None);
     }
 
     #[test]
@@ -344,11 +436,51 @@ mod tests {
     #[test]
     fn readiness_returns_port_or_start_error() {
         let ready = BackendState::default();
-        ready.inner.lock().unwrap().port = Some(8850);
+        {
+            let mut inner = ready.inner.lock().unwrap();
+            inner.port = Some(8850);
+            inner.control_token = Some("secret-token".to_owned());
+        }
         assert_eq!(wait_for_backend(&ready), Ok(8850));
 
         let failed = BackendState::default();
         failed.inner.lock().unwrap().error = Some("spawn failed".to_owned());
         assert_eq!(wait_for_backend(&failed), Err("spawn failed".to_owned()));
+    }
+
+    #[test]
+    fn readiness_waits_for_both_port_and_control_token() {
+        let missing_control = BackendState::default();
+        {
+            let mut inner = missing_control.inner.lock().unwrap();
+            inner.port = Some(8850);
+            inner.terminated = true;
+        }
+        assert_eq!(
+            wait_for_backend(&missing_control),
+            Err("后端已退出，未能提供服务".to_owned())
+        );
+    }
+
+    #[test]
+    fn graceful_shutdown_sends_control_token_to_hidden_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0_u8; 2048];
+            let length = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..length]);
+            assert!(request.starts_with("POST /api/cockpit/shutdown HTTP/1.1\r\n"));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("x-codex-cockpit-control: secret-token\r\n"));
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+
+        assert_eq!(request_shutdown(port, "secret-token"), Ok(()));
+        server.join().unwrap();
     }
 }
