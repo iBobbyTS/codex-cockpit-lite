@@ -181,6 +181,23 @@ test('刷新失败会清除该账号标记并显示可读错误', async () => {
   expect(screen.getByRole('button', { name: '刷新 test@example.com' }).disabled).toBe(false);
 });
 
+test('删除确认使用可访问弹窗，并可通过背景按钮取消', async () => {
+  const initial = account();
+  const apiClient = vi.fn((method, path) => {
+    if (method === 'GET' && path === '/api/config') return Promise.resolve(config(['account-1']));
+    if (method === 'GET' && path === '/api/accounts') return Promise.resolve([initial]);
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+
+  render(Accounts, { apiClient, pollIntervalMs: 0 });
+  await screen.findByText('test@example.com');
+  await fireEvent.click(screen.getByRole('button', { name: '删除' }));
+
+  expect(screen.getByRole('dialog', { name: '确认删除' })).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: '取消删除' }));
+  expect(screen.queryByRole('dialog', { name: '确认删除' })).toBeNull();
+});
+
 test('多个账号的刷新状态彼此独立', async () => {
   const firstRefresh = deferred();
   const secondRefresh = deferred();

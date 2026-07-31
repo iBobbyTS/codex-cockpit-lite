@@ -239,9 +239,10 @@
   {/if}
 
   {#if deleteTarget}
-    <div class="modal-backdrop" onclick={() => deleteTarget = null}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
-        <h3>确认删除</h3>
+    <div class="modal-layer">
+      <button class="modal-backdrop" type="button" aria-label="取消删除" onclick={() => deleteTarget = null}></button>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
+        <h3 id="delete-dialog-title">确认删除</h3>
         <p>此操作不可撤销，该账号的所有凭据将被移除。</p>
         <div class="modal-actions">
           <button class="danger" onclick={confirmDelete}>删除</button>
@@ -260,9 +261,10 @@
   {/if}
 
   {#if duplicate}
-    <div class="modal-backdrop" onclick={cancelDuplicate}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
-        <h3>重复账号</h3>
+    <div class="modal-layer">
+      <button class="modal-backdrop" type="button" aria-label="取消覆盖" onclick={cancelDuplicate}></button>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="duplicate-dialog-title">
+        <h3 id="duplicate-dialog-title">重复账号</h3>
         <p>该邮箱已存在账号，是否覆盖更新？覆盖将刷新凭据信息。</p>
         <div class="modal-actions">
           <button class="danger" onclick={overrideImport}>覆盖</button>
@@ -273,9 +275,10 @@
   {/if}
 
   {#if unsupportedModal}
-    <div class="modal-backdrop" onclick={() => unsupportedModal = false}>
-      <div class="modal" onclick={(e) => e.stopPropagation()}>
-        <h3>不支持的认证方式</h3>
+    <div class="modal-layer">
+      <button class="modal-backdrop" type="button" aria-label="关闭提示" onclick={() => unsupportedModal = false}></button>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="unsupported-dialog-title">
+        <h3 id="unsupported-dialog-title">不支持的认证方式</h3>
         <p>Codex Cockpit Lite 当前仅支持 ChatGPT (OAuth) 登录方式。API Key 和 Agent Identity 暂不可用。</p>
         <div class="modal-actions">
           <button onclick={() => unsupportedModal = false}>我知道了</button>
@@ -411,13 +414,19 @@
 
   
 
-  .modal-backdrop {
+  .modal-layer {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.6);
     display: flex; align-items: center; justify-content: center;
     z-index: 100;
   }
+  .modal-backdrop {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%; padding: 0;
+    border: 0; border-radius: 0;
+    background: rgba(0,0,0,0.6);
+  }
   .modal {
+    position: relative; z-index: 1;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
