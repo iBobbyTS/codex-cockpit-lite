@@ -96,6 +96,7 @@ class CockpitStatus(BaseModel):
     version: str = "0.1.0"
     uptime_seconds: float = 0
     actual_port: int = 0
+    service_url: str = ""
     active_account_index: int = 0
     active_account_id: str = ""
     active_account_email: str = ""

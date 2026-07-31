@@ -23,7 +23,7 @@ from .api import router as api_router
 from .api import set_api_config_dir
 from .config import ensure_config_dir, get_config_dir, load_config, save_config
 from .status import router as status_router
-from .status import set_actual_port, set_config_dir
+from .status import set_actual_port, set_bind_host, set_config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +255,7 @@ def main():
     actual_port = find_available_port(desired_port, host)
     _actual_port = actual_port
     set_actual_port(actual_port)
+    set_bind_host(host)
 
     # Write back to config if port changed
     if actual_port != cfg.api.port:

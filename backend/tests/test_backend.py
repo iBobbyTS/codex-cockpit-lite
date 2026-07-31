@@ -14,6 +14,7 @@ import pytest
 import uvicorn
 
 import codex_cockpit_lite.main as main_module
+import codex_cockpit_lite.status as status_module
 from codex_cockpit_lite.api import get_config_dir_info, set_api_config_dir
 from codex_cockpit_lite.auth import (
     _token_expired,
@@ -39,6 +40,7 @@ from codex_cockpit_lite.models import (
     SpeedMode,
 )
 from codex_cockpit_lite.quota import _collect_records, _parse_timestamp
+from codex_cockpit_lite.status import build_service_url, find_active_lan_address
 
 
 def chatgpt_auth(email: str = "test@example.com") -> dict:
@@ -145,8 +147,48 @@ def test_app_config_serialization() -> None:
 
 
 def test_cockpit_status_model() -> None:
-    status = CockpitStatus(running=True, uptime_seconds=10.5)
+    status = CockpitStatus(
+        running=True,
+        uptime_seconds=10.5,
+        service_url="http://127.0.0.1:8844/v1",
+    )
     assert status.model_dump()["running"] is True
+    assert status.model_dump()["service_url"] == "http://127.0.0.1:8844/v1"
+
+
+def test_active_lan_address_uses_first_usable_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        status_module,
+        "_active_ipv4_candidates",
+        lambda: iter(["127.0.0.1", "169.254.1.2", "192.168.1.25", "10.0.0.8"]),
+    )
+    assert find_active_lan_address() == "192.168.1.25"
+
+
+def test_active_lan_address_falls_back_to_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(status_module, "_active_ipv4_candidates", lambda: iter([]))
+    assert find_active_lan_address() == "127.0.0.1"
+
+
+def test_service_url_uses_loopback_for_local_bind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_lookup() -> str:
+        raise AssertionError("local bind must not inspect network interfaces")
+
+    monkeypatch.setattr(status_module, "find_active_lan_address", unexpected_lookup)
+    assert build_service_url("127.0.0.1", 8844) == "http://127.0.0.1:8844/v1"
+
+
+def test_service_url_uses_active_address_for_lan_bind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(status_module, "find_active_lan_address", lambda: "192.168.50.12")
+    assert build_service_url("0.0.0.0", 8845) == "http://192.168.50.12:8845/v1"
 
 
 def test_parse_timestamp() -> None:

@@ -546,6 +546,7 @@ async fn api_call(
 pub fn run() {
     log_line("[cockpit] App starting");
     let application = tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shell::init())
         .manage(BackendState::default())
         .setup(|app| {

@@ -1,7 +1,12 @@
 <script>
   import { apiClient as defaultApiClient } from '../lib/apiClient.js';
+  import { copyTextToClipboard } from '../lib/clipboard.js';
 
-  let { apiClient = defaultApiClient, pollIntervalMs = 3000 } = $props();
+  let {
+    apiClient = defaultApiClient,
+    copyText = copyTextToClipboard,
+    pollIntervalMs = 3000,
+  } = $props();
   let config = $state(null);
   let serviceDraft = $state(null);
   let status = $state(null);
@@ -90,6 +95,18 @@
     return saveConfig(config, '自动切换设置已保存', '保存自动切换设置失败');
   }
 
+  async function copyServiceAddress() {
+    if (!status?.service_url) return;
+    errorMsg = '';
+    savedMsg = '';
+    try {
+      await copyText(status.service_url);
+      savedMsg = '服务地址已复制';
+    } catch (error) {
+      errorMsg = '复制服务地址失败: ' + String(error);
+    }
+  }
+
   $effect(() => {
     loadConfig();
   });
@@ -147,12 +164,10 @@
         ></span>
         {backendRunning ? '运行中' : '已停止'}
       </div>
-      <div>
-        <span class="label">端口:</span>
-        {config?.api?.port || ''}
-        {#if portMismatch}
-          <span class="mismatch-hint">→ 实际: {reportedPort}</span>
-        {/if}
+      <div class="service-address">
+        <span class="label">服务地址:</span>
+        <code>{status?.service_url || ''}</code>
+        <button onclick={copyServiceAddress} disabled={!status?.service_url}>复制</button>
       </div>
       {#if status}
         <div>
@@ -271,6 +286,22 @@
     display: flex;
     gap: 20px;
     flex-wrap: wrap;
+  }
+  .service-address {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .service-address code {
+    color: var(--text);
+    font-size: 13px;
+  }
+  .service-address .label {
+    margin-right: 0;
+  }
+  .service-address button {
+    padding: 3px 8px;
+    font-size: 12px;
   }
   .label {
     color: var(--text-muted);
@@ -433,11 +464,6 @@
   }
   .mismatch-close:hover {
     color: var(--text);
-  }
-  .mismatch-hint {
-    color: var(--warning);
-    font-size: 12px;
-    margin-left: 4px;
   }
   .toast {
     position: fixed;

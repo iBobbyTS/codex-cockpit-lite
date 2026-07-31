@@ -25,11 +25,30 @@ function config() {
 function status() {
   return {
     actual_port: 8844,
+    service_url: 'http://127.0.0.1:8844/v1',
     active_account_email: null,
     total_requests: 0,
     recent_requests: [],
   };
 }
+
+test('显示完整服务地址并复制', async () => {
+  const copyText = vi.fn(() => Promise.resolve());
+  const apiClient = vi.fn((method, path) => {
+    if (method === 'GET' && path === '/api/config') return Promise.resolve(config());
+    if (method === 'GET' && path === '/v1/cockpit/status') return Promise.resolve(status());
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+
+  render(Service, { apiClient, copyText, pollIntervalMs: 0 });
+
+  expect(await screen.findByText('http://127.0.0.1:8844/v1')).toBeTruthy();
+  expect(screen.queryByText('端口:')).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: '复制' }));
+
+  expect(copyText).toHaveBeenCalledWith('http://127.0.0.1:8844/v1');
+  expect(await screen.findByText('服务地址已复制')).toBeTruthy();
+});
 
 test('显示并保存 API 服务设置', async () => {
   const apiClient = vi.fn((method, path, body) => {
