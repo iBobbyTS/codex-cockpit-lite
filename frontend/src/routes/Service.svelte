@@ -1,4 +1,5 @@
 <script>
+  import Toast from '../lib/Toast.svelte';
   import { apiClient as defaultApiClient } from '../lib/apiClient.js';
   import { copyTextToClipboard } from '../lib/clipboard.js';
 
@@ -18,6 +19,14 @@
   let errorMsg = $state('');
   let savedMsg = $state('');
   let saving = $state(false);
+
+  function dismissError() {
+    errorMsg = '';
+  }
+
+  function dismissSaved() {
+    savedMsg = '';
+  }
 
   async function loadConfig() {
     try {
@@ -124,21 +133,11 @@
   <h1>API 服务</h1>
 
   {#if errorMsg}
-    <div class="toast error">
-      {errorMsg}
-      <button class="toast-close" aria-label="关闭错误提示" onclick={() => (errorMsg = '')}
-        >✕</button
-      >
-    </div>
+    <Toast message={errorMsg} tone="error" onDismiss={dismissError} closeLabel="关闭错误提示" />
   {/if}
 
   {#if savedMsg}
-    <div class="toast success">
-      {savedMsg}
-      <button class="toast-close" aria-label="关闭保存提示" onclick={() => (savedMsg = '')}
-        >✕</button
-      >
-    </div>
+    <Toast message={savedMsg} tone="success" onDismiss={dismissSaved} closeLabel="关闭保存提示" />
   {/if}
 
   {#if portMismatch}
@@ -465,33 +464,6 @@
   .mismatch-close:hover {
     color: var(--text);
   }
-  .toast {
-    position: fixed;
-    top: 16px;
-    left: 50%;
-    transform: translateX(-50%);
-    padding: 8px 16px;
-    border-radius: 8px;
-    color: white;
-    z-index: 200;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-  }
-  .toast.error {
-    background: var(--danger);
-  }
-  .toast.success {
-    background: var(--success);
-  }
-  .toast-close {
-    background: none;
-    border: none;
-    color: white;
-    padding: 0 2px;
-  }
-
   @media (max-width: 720px) {
     .service-form {
       grid-template-columns: 1fr;

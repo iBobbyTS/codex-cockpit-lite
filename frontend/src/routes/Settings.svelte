@@ -1,10 +1,15 @@
 <script>
+  import Toast from '../lib/Toast.svelte';
   import { apiClient as defaultApiClient } from '../lib/apiClient.js';
 
   let { apiClient = defaultApiClient } = $props();
   let configDir = $state('');
   let loading = $state(true);
   let errorMsg = $state('');
+
+  function dismissError() {
+    errorMsg = '';
+  }
 
   async function loadSettings() {
     loading = true;
@@ -48,12 +53,7 @@
   {/if}
 
   {#if errorMsg}
-    <div class="toast error">
-      {errorMsg}
-      <button class="toast-close" aria-label="关闭错误提示" onclick={() => (errorMsg = '')}
-        >✕</button
-      >
-    </div>
+    <Toast message={errorMsg} tone="error" onDismiss={dismissError} closeLabel="关闭错误提示" />
   {/if}
 </div>
 
@@ -108,28 +108,5 @@
   .load-error p {
     color: var(--text-muted);
     font-size: 14px;
-  }
-  .toast {
-    position: fixed;
-    top: 16px;
-    left: 50%;
-    transform: translateX(-50%);
-    padding: 8px 16px;
-    border-radius: 8px;
-    color: white;
-    z-index: 200;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-  }
-  .toast.error {
-    background: var(--danger);
-  }
-  .toast-close {
-    background: none;
-    border: none;
-    color: white;
-    padding: 0 2px;
   }
 </style>

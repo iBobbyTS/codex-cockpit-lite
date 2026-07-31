@@ -1,4 +1,5 @@
 <script>
+  import Toast from '../lib/Toast.svelte';
   import { tick } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { apiClient as defaultApiClient } from '../lib/apiClient.js';
@@ -16,6 +17,10 @@
   let duplicate = $state(null);
   let pendingImport = $state(null);
   let unsupportedModal = $state(false);
+
+  function dismissError() {
+    errorMsg = '';
+  }
   let importJson = $state('');
   let importName = $state('');
   let editingAccountId = $state(null);
@@ -324,9 +329,7 @@
   {/if}
 
   {#if errorMsg}
-    <div class="toast error">
-      {errorMsg} <button class="toast-close" onclick={() => (errorMsg = '')}>✕</button>
-    </div>
+    <Toast message={errorMsg} tone="error" onDismiss={dismissError} closeLabel="关闭错误提示" />
   {/if}
 
   {#if duplicate}
@@ -798,16 +801,5 @@
     display: flex;
     align-items: center;
     gap: 10px;
-  }
-  .toast.error {
-    background: var(--danger);
-  }
-  .toast-close {
-    background: none;
-    border: none;
-    color: white;
-    font-size: 14px;
-    cursor: pointer;
-    padding: 0 2px;
   }
 </style>
