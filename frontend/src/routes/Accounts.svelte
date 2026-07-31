@@ -34,6 +34,7 @@
   let noticeMsg = $state('');
   let nowMs = $state(Date.now());
   let draggedAccountId = $state(null);
+  let dropIndicator = $state(null);
   let savingOrder = $state(false);
   const refreshingIds = new SvelteSet();
 
@@ -77,10 +78,12 @@
       : [...currentAccounts, next];
 
     if (config?.api && !config.api.selected_accounts.includes(next.id)) {
+      const currentOrder = config.api.account_order ?? [];
       config = {
         ...config,
         api: {
           ...config.api,
+          account_order: currentOrder.includes(next.id) ? currentOrder : [...currentOrder, next.id],
           selected_accounts: [...config.api.selected_accounts, next.id],
         },
       };
@@ -306,43 +309,75 @@
     void activateAccount(account.id);
   }
 
-  function startAccountDrag(event, accountId, enabled) {
-    if (!enabled || savingOrder) {
+  function startAccountDrag(event, accountId) {
+    if (savingOrder) {
       event.preventDefault();
       return;
     }
     draggedAccountId = accountId;
+    dropIndicator = null;
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', accountId);
   }
 
-  function allowAccountDrop(event, targetId, enabled) {
-    if (enabled && draggedAccountId && draggedAccountId !== targetId) {
+  function accountDropPosition(event) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const pointerY = Number.isFinite(event.clientY) ? event.clientY : bounds.top;
+    return pointerY < bounds.top + bounds.height / 2 ? 'before' : 'after';
+  }
+
+  function updateAccountDropIndicator(event, targetId) {
+    if (draggedAccountId && draggedAccountId !== targetId) {
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
+      dropIndicator = { targetId, position: accountDropPosition(event) };
     }
   }
 
-  async function dropAccount(event, targetId, enabled) {
+  function updateAccountListDropIndicator(event) {
+    if (event.target !== event.currentTarget || !draggedAccountId || !accounts?.length) return;
+    const lastAccountId = accounts.at(-1)?.id;
+    if (!lastAccountId || draggedAccountId === lastAccountId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    dropIndicator = { targetId: lastAccountId, position: 'after' };
+  }
+
+  function finishAccountDrag() {
+    draggedAccountId = null;
+    dropIndicator = null;
+  }
+
+  async function dropAccount(event, targetId, forcedPosition = null) {
     event.preventDefault();
     const sourceId = draggedAccountId || event.dataTransfer.getData('text/plain');
-    draggedAccountId = null;
-    if (!enabled || !sourceId || sourceId === targetId || savingOrder || !config) return;
+    const position =
+      forcedPosition ??
+      (dropIndicator?.targetId === targetId ? dropIndicator.position : accountDropPosition(event));
+    finishAccountDrag();
+    if (!sourceId || sourceId === targetId || savingOrder || !config) return;
 
-    const currentOrder = [...config.api.selected_accounts];
+    const currentOrder = (accounts ?? []).map((account) => account.id);
     const sourceIndex = currentOrder.indexOf(sourceId);
-    const targetIndex = currentOrder.indexOf(targetId);
-    if (sourceIndex < 0 || targetIndex < 0) return;
+    if (sourceIndex < 0 || !currentOrder.includes(targetId)) return;
 
     const nextOrder = [...currentOrder];
     nextOrder.splice(sourceIndex, 1);
-    nextOrder.splice(targetIndex, 0, sourceId);
+    const targetIndex = nextOrder.indexOf(targetId);
+    const insertionIndex = targetIndex + (position === 'after' ? 1 : 0);
+    nextOrder.splice(insertionIndex, 0, sourceId);
     const positions = new Map(nextOrder.map((id, index) => [id, index]));
     const previousAccounts = accounts;
     const previousConfig = config;
+    const selected = selectedIds();
+    const nextSelectedAccounts = nextOrder.filter((accountId) => selected.has(accountId));
     config = {
       ...config,
-      api: { ...config.api, selected_accounts: nextOrder },
+      api: {
+        ...config.api,
+        account_order: nextOrder,
+        selected_accounts: nextSelectedAccounts,
+      },
     };
     accounts = [...(accounts ?? [])].sort((left, right) => {
       const leftPosition = positions.get(left.id) ?? Number.MAX_SAFE_INTEGER;
@@ -474,7 +509,16 @@
     </div>
   {/if}
 
-  <div class="account-list" role="list" aria-busy={initialLoading}>
+  <div
+    class="account-list"
+    role="list"
+    aria-busy={initialLoading}
+    ondragover={updateAccountListDropIndicator}
+    ondrop={(event) => {
+      if (event.target !== event.currentTarget || !accounts?.length) return;
+      void dropAccount(event, accounts.at(-1).id, 'after');
+    }}
+  >
     {#if initialLoading}
       <div class="loading-state" role="status" aria-live="polite">
         <span>正在读取账号…</span>
@@ -499,22 +543,21 @@
         <div
           class="card account-card"
           class:active-account={account.is_active}
+          class:draggable-account={!savingOrder}
           class:dragging={draggedAccountId === account.id}
+          class:drop-before={dropIndicator?.targetId === account.id &&
+            dropIndicator.position === 'before'}
+          class:drop-after={dropIndicator?.targetId === account.id &&
+            dropIndicator.position === 'after'}
           role="listitem"
-          ondragover={(event) => allowAccountDrop(event, account.id, sel)}
-          ondrop={(event) => dropAccount(event, account.id, sel)}
+          draggable={!savingOrder}
+          title="拖动卡片调整账号顺序"
+          ondragstart={(event) => startAccountDrag(event, account.id)}
+          ondragover={(event) => updateAccountDropIndicator(event, account.id)}
+          ondrop={(event) => dropAccount(event, account.id)}
+          ondragend={finishAccountDrag}
         >
-          <button
-            class="drag-handle"
-            draggable={sel && !savingOrder}
-            disabled={!sel || savingOrder}
-            aria-label="拖动调整 {accountTitle(account)} 的调度顺序"
-            title={sel ? '拖动调整调度顺序' : '启用账号后可调整调度顺序'}
-            ondragstart={(event) => startAccountDrag(event, account.id, sel)}
-            ondragend={() => (draggedAccountId = null)}
-          >
-            ⠿
-          </button>
+          <span class="drag-grip" aria-hidden="true">⠿</span>
           <div class="account-main">
             <div class="account-info">
               {#if editingAccountId === account.id}
@@ -643,6 +686,9 @@
 <style>
   .page {
     max-width: 800px;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
   }
   .header {
     display: flex;
@@ -678,6 +724,7 @@
   }
 
   .account-list {
+    flex: 1;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -757,6 +804,7 @@
   }
 
   .account-card {
+    position: relative;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -771,24 +819,40 @@
   .account-card.dragging {
     opacity: 0.55;
   }
-  .drag-handle {
-    width: 20px;
-    min-width: 20px;
-    padding: 4px 0;
-    border: 0;
-    background: transparent;
-    color: var(--text-muted);
+  .account-card.draggable-account {
     cursor: grab;
   }
-  .drag-handle:hover:not(:disabled) {
-    background: transparent;
-    color: var(--text);
-  }
-  .drag-handle:active:not(:disabled) {
+  .account-card.draggable-account:active {
     cursor: grabbing;
   }
-  .drag-handle:disabled {
-    opacity: 0.3;
+  .account-card.drop-before::before,
+  .account-card.drop-after::after {
+    position: absolute;
+    left: 0;
+    right: 0;
+    z-index: 2;
+    height: 3px;
+    border-radius: 999px;
+    background: var(--accent);
+    content: '';
+    pointer-events: none;
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 65%, transparent);
+  }
+  .account-card.drop-before::before {
+    top: -7px;
+  }
+  .account-card.drop-after::after {
+    bottom: -7px;
+  }
+  .drag-grip {
+    width: 20px;
+    min-width: 20px;
+    color: var(--text-muted);
+    text-align: center;
+    transition: color 0.15s ease;
+  }
+  .draggable-account:hover .drag-grip {
+    color: var(--text);
   }
   .account-main {
     flex: 1;

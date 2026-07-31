@@ -34,11 +34,12 @@ function account(overrides = {}) {
   };
 }
 
-function config(selectedAccounts = []) {
+function config(selectedAccounts = [], accountOrder = selectedAccounts) {
   return {
     version: 1,
     api: {
       port: 8844,
+      account_order: accountOrder,
       selected_accounts: selectedAccounts,
     },
   };
@@ -494,7 +495,7 @@ test('显示当前调度账号，只有两个额度都大于零的账号可以�
   expect(within(activeCard).queryByText('当前调度')).toBeNull();
 });
 
-test('拖动启用账号后立即保存新的调度顺序', async () => {
+test('拖动禁用账号时显示插入线并保存完整账号顺序', async () => {
   const first = account({
     quota: { weekly_percent: 80, hourly_percent: 70, queried_at: 1 },
   });
@@ -506,11 +507,15 @@ test('拖动启用账号后立即保存新的调度顺序', async () => {
   });
   const apiClient = vi.fn((method, path, body) => {
     if (method === 'GET' && path === '/api/config') {
-      return Promise.resolve(config(['account-1', 'account-2']));
+      return Promise.resolve(config(['account-1'], ['account-1', 'account-2']));
     }
     if (method === 'GET' && path === '/api/accounts') return Promise.resolve([first, second]);
     if (method === 'PUT' && path === '/api/accounts/order') {
-      return Promise.resolve({ ok: true, selected_accounts: body.account_ids });
+      return Promise.resolve({
+        ok: true,
+        account_order: body.account_ids,
+        selected_accounts: ['account-1'],
+      });
     }
     return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
   });
@@ -523,14 +528,70 @@ test('拖动启用账号后立即保存新的调度顺序', async () => {
 
   render(Accounts, { apiClient, pollIntervalMs: 0 });
   await screen.findByText('test@example.com');
-  const secondHandle = screen.getByRole('button', {
-    name: '拖动调整 Second 的调度顺序',
-  });
   const firstCard = screen.getByText('test@example.com').closest('.account-card');
+  const secondCard = screen.getByText('second@example.com').closest('.account-card');
+  vi.spyOn(firstCard, 'getBoundingClientRect').mockReturnValue({ top: 100, height: 100 });
 
-  await fireEvent.dragStart(secondHandle, { dataTransfer });
-  await fireEvent.dragOver(firstCard, { dataTransfer });
-  await fireEvent.drop(firstCard, { dataTransfer });
+  expect(secondCard.draggable).toBe(true);
+  await fireEvent.dragStart(secondCard, { dataTransfer });
+  await fireEvent.dragOver(firstCard, { dataTransfer, clientY: 110 });
+  await waitFor(() => expect(firstCard.classList.contains('drop-before')).toBe(true));
+  await fireEvent.drop(firstCard, { dataTransfer, clientY: 110 });
+  expect(firstCard.classList.contains('drop-before')).toBe(false);
+
+  await waitFor(() => {
+    expect(apiClient).toHaveBeenCalledWith('PUT', '/api/accounts/order', {
+      account_ids: ['account-2', 'account-1'],
+    });
+  });
+  expect(screen.getAllByText(/@example\.com$/).map((node) => node.textContent)).toEqual([
+    'second@example.com',
+    'test@example.com',
+  ]);
+});
+
+test('拖到账号列表下方空白区域时显示末尾插入线并追加账号', async () => {
+  const first = account({
+    quota: { weekly_percent: 80, hourly_percent: 70, queried_at: 1 },
+  });
+  const second = account({
+    id: 'account-2',
+    name: 'Second',
+    email: 'second@example.com',
+    quota: { weekly_percent: 60, hourly_percent: 50, queried_at: 1 },
+  });
+  const apiClient = vi.fn((method, path, body) => {
+    if (method === 'GET' && path === '/api/config') {
+      return Promise.resolve(config(['account-1'], ['account-1', 'account-2']));
+    }
+    if (method === 'GET' && path === '/api/accounts') return Promise.resolve([first, second]);
+    if (method === 'PUT' && path === '/api/accounts/order') {
+      return Promise.resolve({
+        ok: true,
+        account_order: body.account_ids,
+        selected_accounts: ['account-1'],
+      });
+    }
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+  const dataTransfer = {
+    effectAllowed: '',
+    dropEffect: '',
+    setData: vi.fn(),
+    getData: vi.fn(() => 'account-1'),
+  };
+
+  render(Accounts, { apiClient, pollIntervalMs: 0 });
+  await screen.findByText('test@example.com');
+  const accountList = document.querySelector('.account-list');
+  const firstCard = screen.getByText('test@example.com').closest('.account-card');
+  const secondCard = screen.getByText('second@example.com').closest('.account-card');
+
+  await fireEvent.dragStart(firstCard, { dataTransfer });
+  await fireEvent.dragOver(accountList, { dataTransfer, clientY: 600 });
+  await waitFor(() => expect(secondCard.classList.contains('drop-after')).toBe(true));
+  await fireEvent.drop(accountList, { dataTransfer, clientY: 600 });
+  expect(secondCard.classList.contains('drop-after')).toBe(false);
 
   await waitFor(() => {
     expect(apiClient).toHaveBeenCalledWith('PUT', '/api/accounts/order', {

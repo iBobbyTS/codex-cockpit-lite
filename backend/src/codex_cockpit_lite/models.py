@@ -24,6 +24,7 @@ class ApiConfig(BaseModel):
     port: int = 8844
     bind_host: str = "127.0.0.1"
     speed: SpeedMode = SpeedMode.STANDARD
+    account_order: list[str] = Field(default_factory=list)
     selected_accounts: list[str] = Field(default_factory=list)
     auto_switch: AutoSwitchConfig = Field(default_factory=lambda: AutoSwitchConfig())
 

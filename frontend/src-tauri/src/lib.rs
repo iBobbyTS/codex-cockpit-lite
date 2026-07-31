@@ -685,4 +685,13 @@ mod tests {
 
         assert_eq!(prepare_app_exit(&state), ExitAction::AllowExit);
     }
+
+    #[test]
+    fn window_disables_native_drag_drop_for_html5_account_sorting() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let drag_drop_enabled = config["app"]["windows"][0]["dragDropEnabled"].as_bool();
+
+        assert_eq!(drag_drop_enabled, Some(false));
+    }
 }

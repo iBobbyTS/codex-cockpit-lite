@@ -68,6 +68,7 @@ def test_default_config(tmp_path: Path) -> None:
     assert cfg.version == 1
     assert cfg.api.port == 8844
     assert cfg.api.speed == SpeedMode.STANDARD
+    assert cfg.api.account_order == []
     assert cfg.api.selected_accounts == []
     assert cfg.api.auto_switch.enabled is True
 
@@ -235,10 +236,56 @@ async def test_force_activate_and_reorder_accounts(tmp_path: Path) -> None:
         assert activated.status_code == 200
         assert activated.json()["active_account_id"] == "second"
         assert reordered.status_code == 200
-        assert load_config(tmp_path).api.selected_accounts == ["second", "third", "first"]
+        saved_config = load_config(tmp_path)
+        assert saved_config.api.account_order == ["second", "third", "first"]
+        assert saved_config.api.selected_accounts == ["second", "third", "first"]
         assert [account["id"] for account in listed.json()] == ["second", "third", "first"]
         assert [account["is_active"] for account in listed.json()] == [True, False, False]
         assert switch_to_next_account(tmp_path)["id"] == "third"
+    finally:
+        set_api_config_dir(get_config_dir())
+
+
+@pytest.mark.asyncio
+async def test_disabled_account_can_be_reordered_and_is_skipped_by_scheduler(
+    tmp_path: Path,
+) -> None:
+    for account_id in ["first", "disabled", "third"]:
+        save_meta(
+            AccountMeta(
+                id=account_id,
+                email=f"{account_id}@example.com",
+                quota=QuotaSnapshot(weekly_percent=100, hourly_percent=100),
+            ),
+            tmp_path,
+        )
+    cfg = load_config(tmp_path)
+    cfg.api.account_order = ["first", "disabled", "third"]
+    cfg.api.selected_accounts = ["first", "third"]
+    save_config(cfg, tmp_path)
+    set_api_config_dir(tmp_path)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            reordered = await client.put(
+                "/api/accounts/order",
+                json={"account_ids": ["third", "disabled", "first"]},
+            )
+            listed = await client.get("/api/accounts")
+
+        assert reordered.status_code == 200
+        saved_config = load_config(tmp_path)
+        assert saved_config.api.account_order == ["third", "disabled", "first"]
+        assert saved_config.api.selected_accounts == ["third", "first"]
+        assert [account["id"] for account in listed.json()] == ["third", "disabled", "first"]
+        assert [account["enabled"] for account in listed.json()] == [True, False, True]
+        assert activate_account("third", tmp_path)["id"] == "third"
+        assert switch_to_next_account(tmp_path)["id"] == "first"
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            enabled = await client.put("/api/accounts/disabled/toggle", json={"enabled": True})
+        assert enabled.status_code == 200
+        assert load_config(tmp_path).api.selected_accounts == ["third", "disabled", "first"]
     finally:
         set_api_config_dir(get_config_dir())
 

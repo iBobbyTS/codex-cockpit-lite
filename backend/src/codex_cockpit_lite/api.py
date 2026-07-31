@@ -85,6 +85,23 @@ def _normalize_display_name(value: object) -> str:
     return display_name
 
 
+def _normalized_account_order(cfg: AppConfig, metas: list[AccountMeta]) -> list[str]:
+    known_ids = {meta.id for meta in metas}
+    ordered_ids: list[str] = []
+    for account_id in [*cfg.api.account_order, *cfg.api.selected_accounts]:
+        if account_id in known_ids and account_id not in ordered_ids:
+            ordered_ids.append(account_id)
+    ordered_ids.extend(sorted(known_ids - set(ordered_ids)))
+    return ordered_ids
+
+
+def _apply_selected_order(cfg: AppConfig, account_order: list[str]) -> None:
+    selected_ids = set(cfg.api.selected_accounts)
+    cfg.api.selected_accounts = [
+        account_id for account_id in account_order if account_id in selected_ids
+    ]
+
+
 # ─── Config ───
 
 
@@ -116,7 +133,8 @@ async def get_accounts():
     metas = list_account_metas(_cd())
     cfg = load_config(_cd())
     selected = set(cfg.api.selected_accounts)
-    positions = {account_id: index for index, account_id in enumerate(cfg.api.selected_accounts)}
+    account_order = _normalized_account_order(cfg, metas)
+    positions = {account_id: index for index, account_id in enumerate(account_order)}
     metas.sort(key=lambda meta: (positions.get(meta.id, len(positions)), meta.id))
     active = get_active_account(_cd())
     for m in metas:
@@ -141,12 +159,18 @@ async def reorder_accounts(body: dict):
     if len(account_ids) != len(set(account_ids)):
         raise HTTPException(400, "账号顺序不能包含重复账号")
 
-    cfg = load_config(_cd())
-    if set(account_ids) != set(cfg.api.selected_accounts):
+    metas = list_account_metas(_cd())
+    if set(account_ids) != {meta.id for meta in metas}:
         raise HTTPException(409, "账号列表已变化 请刷新后重试")
-    cfg.api.selected_accounts = account_ids
+    cfg = load_config(_cd())
+    cfg.api.account_order = account_ids
+    _apply_selected_order(cfg, account_ids)
     save_config(cfg, _cd())
-    return {"ok": True, "selected_accounts": account_ids}
+    return {
+        "ok": True,
+        "account_order": account_ids,
+        "selected_accounts": cfg.api.selected_accounts,
+    }
 
 
 @router.post("/accounts/{account_id}/activate")
@@ -215,9 +239,12 @@ async def import_account(req: Request):
 
     # Auto-add to selected accounts
     cfg = load_config(_cd())
+    if account_id not in cfg.api.account_order:
+        cfg.api.account_order.append(account_id)
     if account_id not in cfg.api.selected_accounts:
         cfg.api.selected_accounts.append(account_id)
-        save_config(cfg, _cd())
+    _apply_selected_order(cfg, cfg.api.account_order)
+    save_config(cfg, _cd())
 
     return meta.model_dump()
 
@@ -268,9 +295,12 @@ async def import_from_codex(req: Request):
     save_meta(meta, _cd())
 
     cfg = load_config(_cd())
+    if account_id not in cfg.api.account_order:
+        cfg.api.account_order.append(account_id)
     if account_id not in cfg.api.selected_accounts:
         cfg.api.selected_accounts.append(account_id)
-        save_config(cfg, _cd())
+    _apply_selected_order(cfg, cfg.api.account_order)
+    save_config(cfg, _cd())
 
     return meta.model_dump()
 
@@ -297,6 +327,7 @@ async def delete_account(account_id: str):
     logger.info("DELETE account %s: directory removed", account_id)
 
     cfg = load_config(_cd())
+    cfg.api.account_order = [a for a in cfg.api.account_order if a != account_id]
     cfg.api.selected_accounts = [a for a in cfg.api.selected_accounts if a != account_id]
     save_config(cfg, _cd())
     logger.info("DELETE account %s: done", account_id)
@@ -310,11 +341,14 @@ async def toggle_account(account_id: str, req: Request):
     enabled = body.get("enabled", True)
 
     cfg = load_config(_cd())
+    account_order = _normalized_account_order(cfg, list_account_metas(_cd()))
+    cfg.api.account_order = account_order
     if enabled:
         if account_id not in cfg.api.selected_accounts:
             cfg.api.selected_accounts.append(account_id)
     else:
         cfg.api.selected_accounts = [a for a in cfg.api.selected_accounts if a != account_id]
+    _apply_selected_order(cfg, account_order)
     save_config(cfg, _cd())
 
     return {"ok": True}
