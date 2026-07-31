@@ -62,6 +62,19 @@ def _dedup_account(email: str, account_id: str):
     return None
 
 
+async def _read_optional_json_object(req: Request) -> dict:
+    raw_body = await req.body()
+    if not raw_body:
+        return {}
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError as error:
+        raise HTTPException(400, f"Invalid request JSON: {error}") from error
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Invalid request JSON: expected an object")
+    return body
+
+
 # ─── Config ───
 
 
@@ -157,11 +170,7 @@ async def import_account(req: Request):
 
 @router.post("/accounts/import-from-codex")
 async def import_from_codex(req: Request):
-    body = (
-        await req.json()
-        if req.headers.get("content-type", "").startswith("application/json")
-        else {}
-    )
+    body = await _read_optional_json_object(req)
     force = body.get("force", False)
     home = Path.home()
     auth_path = home / ".codex" / "auth.json"

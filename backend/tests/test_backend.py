@@ -210,6 +210,64 @@ async def test_invalid_auth_mode_returns_readable_error_without_writing(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_import_from_codex_empty_body_detects_duplicate_and_force_reuses_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_dir = tmp_path / "config"
+    home_dir = tmp_path / "home"
+    auth_path = home_dir / ".codex" / "auth.json"
+    auth_path.parent.mkdir(parents=True)
+    auth_path.write_text(json.dumps(chatgpt_auth()))
+    save_meta(
+        AccountMeta(
+            id="existing-account",
+            name="Existing Account",
+            email="test@example.com",
+            account_id="account-1",
+        ),
+        config_dir,
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home_dir))
+    set_api_config_dir(config_dir)
+
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            duplicate = await client.post(
+                "/api/accounts/import-from-codex",
+                content=b"",
+                headers={"content-type": "application/json"},
+            )
+            overwritten = await client.post("/api/accounts/import-from-codex", json={"force": True})
+
+        assert duplicate.status_code == 409
+        assert duplicate.json()["detail"] == "DUPLICATE: existing-account"
+        assert overwritten.status_code == 200
+        assert overwritten.json()["id"] == "existing-account"
+        assert len(list((config_dir / "accounts").iterdir())) == 1
+        assert (config_dir / "accounts" / "existing-account" / "auth.json").exists()
+    finally:
+        set_api_config_dir(get_config_dir())
+
+
+@pytest.mark.asyncio
+async def test_import_from_codex_rejects_malformed_nonempty_body(tmp_path: Path) -> None:
+    set_api_config_dir(tmp_path)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/accounts/import-from-codex",
+                content=b"not-json",
+                headers={"content-type": "application/json"},
+            )
+        assert response.status_code == 400
+        assert response.json()["detail"].startswith("Invalid request JSON:")
+    finally:
+        set_api_config_dir(get_config_dir())
+
+
+@pytest.mark.asyncio
 async def test_lifespan_cancels_quota_refresh_task() -> None:
     async with app.router.lifespan_context(app):
         task = app.state.quota_refresh_task

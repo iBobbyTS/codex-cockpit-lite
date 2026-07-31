@@ -172,6 +172,52 @@ test('导入完成后切换为该账号独立刷新，刷新返回前标记保�
   expect(within(refreshedCard).getByText('Pro 20x')).toBeTruthy();
 });
 
+test('从 ~/.codex 重复导入可取消，并可确认覆盖后复用原账号', async () => {
+  const existing = account();
+  const apiClient = vi.fn((method, path, body) => {
+    if (method === 'GET' && path === '/api/config') {
+      return Promise.resolve(config(['account-1']));
+    }
+    if (method === 'GET' && path === '/api/accounts') return Promise.resolve([existing]);
+    if (method === 'POST' && path === '/api/accounts/import-from-codex') {
+      if (body?.force) return Promise.resolve(existing);
+      return Promise.reject(new Error('DUPLICATE: account-1'));
+    }
+    if (method === 'POST' && path === '/api/accounts/account-1/refresh') {
+      return Promise.resolve(existing);
+    }
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+
+  render(Accounts, { apiClient, pollIntervalMs: 0 });
+  await screen.findByText('test@example.com');
+
+  await fireEvent.click(screen.getByRole('button', { name: '从 ~/.codex 导入' }));
+  let dialog = await screen.findByRole('dialog', { name: '重复账号' });
+  await fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+  expect(screen.queryByRole('dialog', { name: '重复账号' })).toBeNull();
+  expect(
+    apiClient.mock.calls.some(
+      ([method, path, body]) =>
+        method === 'POST' && path === '/api/accounts/import-from-codex' && body?.force,
+    ),
+  ).toBe(false);
+
+  await fireEvent.click(screen.getByRole('button', { name: '从 ~/.codex 导入' }));
+  dialog = await screen.findByRole('dialog', { name: '重复账号' });
+  await fireEvent.click(within(dialog).getByRole('button', { name: '覆盖' }));
+
+  await waitFor(() =>
+    expect(apiClient).toHaveBeenCalledWith('POST', '/api/accounts/import-from-codex', {
+      force: true,
+    }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole('status', { name: '正在刷新 test@example.com' })).toBeNull(),
+  );
+  expect(screen.getAllByText('test@example.com')).toHaveLength(1);
+});
+
 test('手动刷新不进入导入状态，并在返回时同时更新数据和移除标记', async () => {
   const refreshDone = deferred();
   const initial = account({
