@@ -7,7 +7,8 @@
   let { apiClient = defaultApiClient, pollIntervalMs = 5000 } = $props();
 
   let config = $state(null);
-  let accounts = $state([]);
+  let accounts = $state(null);
+  let initialLoading = $state(true);
   let showImport = $state(false);
   let importing = $state(false);
   let deleteTarget = $state(null);
@@ -30,11 +31,19 @@
       accounts = acc;
     } catch (e) {
       errorMsg = '读取配置失败: ' + String(e);
+    } finally {
+      initialLoading = false;
     }
   }
 
+  function retryInitialLoad() {
+    initialLoading = true;
+    void refreshAll();
+  }
+
   function showImportedAccount(imported) {
-    const current = accounts.find((account) => account.id === imported.id);
+    const currentAccounts = accounts ?? [];
+    const current = currentAccounts.find((account) => account.id === imported.id);
     const next = current
       ? {
           ...current,
@@ -48,8 +57,8 @@
       : imported;
 
     accounts = current
-      ? accounts.map((account) => (account.id === next.id ? next : account))
-      : [...accounts, next];
+      ? currentAccounts.map((account) => (account.id === next.id ? next : account))
+      : [...currentAccounts, next];
 
     if (config?.api && !config.api.selected_accounts.includes(next.id)) {
       config = {
@@ -63,7 +72,7 @@
   }
 
   function replaceAccount(updated) {
-    accounts = accounts.map((account) => (account.id === updated.id ? updated : account));
+    accounts = (accounts ?? []).map((account) => (account.id === updated.id ? updated : account));
   }
 
   async function refreshAccount(accountId) {
@@ -216,8 +225,14 @@
   <div class="header">
     <h1>账号管理</h1>
     <div class="actions">
-      <button onclick={importOfficial} disabled={importing}>从 ~/.codex 导入</button>
-      <button class="primary" onclick={() => (showImport = !showImport)} disabled={importing}>
+      <button onclick={importOfficial} disabled={importing || initialLoading || accounts === null}
+        >从 ~/.codex 导入</button
+      >
+      <button
+        class="primary"
+        onclick={() => (showImport = !showImport)}
+        disabled={importing || initialLoading || accounts === null}
+      >
         {showImport ? '取消' : '导入 auth.json'}
       </button>
     </div>
@@ -295,80 +310,109 @@
     </div>
   {/if}
 
-  <div class="account-list">
-    {#each accounts as account (account.id)}
-      {@const sel = selectedIds().has(account.id)}
-      {@const plan = getCodexPlanPresentation(account.plan_type)}
-      <div class="card account-card">
-        <div class="account-main">
-          <div class="account-info">
-            <h3>{account.name || account.email || account.id.slice(0, 8)}</h3>
-            <span class="email">{account.email}</span>
-            <div class="tags">
-              {#if account.plan_type}
-                <span class="badge {plan.className}">
-                  {plan.label}
+  <div class="account-list" aria-busy={initialLoading}>
+    {#if initialLoading}
+      <div class="loading-state" role="status" aria-live="polite">
+        <span>正在读取账号…</span>
+        {#each [0, 1] as placeholder (placeholder)}
+          <div class="card account-skeleton" aria-hidden="true">
+            <div class="skeleton-info">
+              <span class="skeleton-line skeleton-name"></span>
+              <span class="skeleton-line skeleton-email"></span>
+            </div>
+            <div class="skeleton-quota">
+              <span class="skeleton-line"></span>
+              <span class="skeleton-line"></span>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {:else if accounts?.length}
+      {#each accounts as account (account.id)}
+        {@const sel = selectedIds().has(account.id)}
+        {@const plan = getCodexPlanPresentation(account.plan_type)}
+        <div class="card account-card">
+          <div class="account-main">
+            <div class="account-info">
+              <h3>{account.name || account.email || account.id.slice(0, 8)}</h3>
+              <span class="email">{account.email}</span>
+              <div class="tags">
+                {#if account.plan_type}
+                  <span class="badge {plan.className}">
+                    {plan.label}
+                  </span>
+                {/if}
+                {#if account.team_name}
+                  <span class="team">{account.team_name}</span>
+                {/if}
+              </div>
+            </div>
+            <div class="account-quota">
+              {#if refreshingIds.has(account.id)}
+                <span
+                  class="refresh-indicator"
+                  role="status"
+                  aria-label="正在刷新 {account.email || account.name}"
+                >
+                  <span class="refresh-spin">⟳</span>
                 </span>
               {/if}
-              {#if account.team_name}
-                <span class="team">{account.team_name}</span>
-              {/if}
+              <div class="quota-row">
+                <div class="quota-bar">
+                  <div
+                    class="quota-fill"
+                    style="width: {account.quota?.weekly_percent || 0}%"
+                  ></div>
+                </div>
+                <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}
+                  >{account.quota?.weekly_percent || 0}%</span
+                >
+                <span class="quota-reset"
+                  >{formatQuotaReset(account.quota?.weekly_resets_at, nowMs)}</span
+                >
+              </div>
+              <div class="quota-row">
+                <div class="quota-bar">
+                  <div
+                    class="quota-fill"
+                    style="width: {account.quota?.hourly_percent || 0}%"
+                  ></div>
+                </div>
+                <span class="quota-pct" class:low={account.quota?.hourly_percent < 20}
+                  >{account.quota?.hourly_percent || 0}%</span
+                >
+                <span class="quota-reset"
+                  >{formatQuotaReset(account.quota?.hourly_resets_at, nowMs)}</span
+                >
+              </div>
             </div>
           </div>
-          <div class="account-quota">
-            {#if refreshingIds.has(account.id)}
-              <span
-                class="refresh-indicator"
-                role="status"
-                aria-label="正在刷新 {account.email || account.name}"
-              >
-                <span class="refresh-spin">⟳</span>
-              </span>
-            {/if}
-            <div class="quota-row">
-              <div class="quota-bar">
-                <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
-              </div>
-              <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}
-                >{account.quota?.weekly_percent || 0}%</span
-              >
-              <span class="quota-reset"
-                >{formatQuotaReset(account.quota?.weekly_resets_at, nowMs)}</span
-              >
-            </div>
-            <div class="quota-row">
-              <div class="quota-bar">
-                <div class="quota-fill" style="width: {account.quota?.hourly_percent || 0}%"></div>
-              </div>
-              <span class="quota-pct" class:low={account.quota?.hourly_percent < 20}
-                >{account.quota?.hourly_percent || 0}%</span
-              >
-              <span class="quota-reset"
-                >{formatQuotaReset(account.quota?.hourly_resets_at, nowMs)}</span
-              >
-            </div>
+          <div class="account-actions">
+            <button
+              onclick={() => refreshAccount(account.id)}
+              disabled={refreshingIds.has(account.id)}
+              aria-label="刷新 {account.email || account.name}"
+            >
+              刷新
+            </button>
+            <button
+              class={sel ? 'danger' : 'primary'}
+              onclick={() => toggleAccount(account.id, !sel)}
+            >
+              {sel ? '禁用' : '启用'}
+            </button>
+            <button class="danger" onclick={() => (deleteTarget = account.id)}>删除</button>
           </div>
         </div>
-        <div class="account-actions">
-          <button
-            onclick={() => refreshAccount(account.id)}
-            disabled={refreshingIds.has(account.id)}
-            aria-label="刷新 {account.email || account.name}"
-          >
-            刷新
-          </button>
-          <button
-            class={sel ? 'danger' : 'primary'}
-            onclick={() => toggleAccount(account.id, !sel)}
-          >
-            {sel ? '禁用' : '启用'}
-          </button>
-          <button class="danger" onclick={() => (deleteTarget = account.id)}>删除</button>
-        </div>
-      </div>
-    {:else}
+      {/each}
+    {:else if accounts !== null}
       <p class="empty">还没有导入账号。点击上方按钮导入 auth.json。</p>
-    {/each}
+    {:else}
+      <div class="card load-error">
+        <span>账号数据未能加载。</span>
+        <button onclick={retryInitialLoad}>重试</button>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -413,6 +457,79 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+
+  .loading-state {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .account-skeleton {
+    min-height: 86px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+  }
+
+  .skeleton-info,
+  .skeleton-quota {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .skeleton-info {
+    width: 220px;
+  }
+
+  .skeleton-quota {
+    width: 240px;
+  }
+
+  .skeleton-line {
+    display: block;
+    width: 100%;
+    height: 8px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--border) 25%, #343442 50%, var(--border) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.2s ease-in-out infinite;
+  }
+
+  .skeleton-name {
+    width: 65%;
+    height: 12px;
+  }
+
+  .skeleton-email {
+    width: 85%;
+  }
+
+  .load-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton-line {
+      animation: none;
+    }
   }
 
   .account-card {

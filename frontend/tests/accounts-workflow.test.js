@@ -43,6 +43,58 @@ function config(selectedAccounts = []) {
   };
 }
 
+test('首次账号请求完成前显示骨架，明确返回空数组后才显示空状态', async () => {
+  const configReady = deferred();
+  const accountsReady = deferred();
+  const apiClient = vi.fn((method, path) => {
+    if (method === 'GET' && path === '/api/config') return configReady.promise;
+    if (method === 'GET' && path === '/api/accounts') return accountsReady.promise;
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+
+  render(Accounts, { apiClient, pollIntervalMs: 0 });
+
+  expect(screen.getByText('正在读取账号…')).toBeTruthy();
+  expect(screen.queryByText('还没有导入账号。点击上方按钮导入 auth.json。')).toBeNull();
+  expect(screen.getByRole('button', { name: '从 ~/.codex 导入' }).disabled).toBe(true);
+  expect(screen.getByRole('button', { name: '导入 auth.json' }).disabled).toBe(true);
+
+  await act(() => {
+    configReady.resolve(config());
+    accountsReady.resolve([]);
+  });
+
+  expect(await screen.findByText('还没有导入账号。点击上方按钮导入 auth.json。')).toBeTruthy();
+  expect(screen.queryByText('正在读取账号…')).toBeNull();
+  expect(screen.getByRole('button', { name: '从 ~/.codex 导入' }).disabled).toBe(false);
+  expect(screen.getByRole('button', { name: '导入 auth.json' }).disabled).toBe(false);
+});
+
+test('首次账号请求失败后可重试，并在重试期间恢复骨架状态', async () => {
+  const retryAccounts = deferred();
+  let accountCalls = 0;
+  const apiClient = vi.fn((method, path) => {
+    if (method === 'GET' && path === '/api/config') return Promise.resolve(config());
+    if (method === 'GET' && path === '/api/accounts') {
+      accountCalls += 1;
+      if (accountCalls === 1) return Promise.reject(new Error('read failed'));
+      return retryAccounts.promise;
+    }
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+
+  render(Accounts, { apiClient, pollIntervalMs: 0 });
+
+  expect(await screen.findByText('账号数据未能加载。')).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: '重试' }));
+
+  expect(screen.getByText('正在读取账号…')).toBeTruthy();
+  expect(screen.queryByText('账号数据未能加载。')).toBeNull();
+
+  await act(() => retryAccounts.resolve([]));
+  expect(await screen.findByText('还没有导入账号。点击上方按钮导入 auth.json。')).toBeTruthy();
+});
+
 test('导入完成后切换为该账号独立刷新，刷新返回前标记保持可见', async () => {
   const importDone = deferred();
   const refreshDone = deferred();
@@ -170,6 +222,7 @@ test('手动刷新不进入导入状态，并在返回时同时更新数据和�
   const refreshedCard = screen.getByText('test@example.com').closest('.account-card');
   expect(within(refreshedCard).getByText('100%')).toBeTruthy();
   expect(within(refreshedCard).getByText('94%')).toBeTruthy();
+  expect(apiClient.mock.calls.filter(([, path]) => path === '/api/accounts')).toHaveLength(1);
 });
 
 test('刷新失败会清除该账号标记并显示可读错误', async () => {
