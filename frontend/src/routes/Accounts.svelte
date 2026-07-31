@@ -18,6 +18,8 @@
   let importName = $state('');
   let errorMsg = $state('');
 
+  let refreshingId = $state(null);
+
   async function refreshAll() {
     try {
       const [cfg, acc] = await Promise.all([
@@ -43,8 +45,12 @@
         auth_json: importJson.trim() || '{}',
         name: importName.trim() || 'Codex Account',
       });
+      refreshingId = result.id;
+      refreshingId = result.id;
       api('POST', '/api/accounts/' + result.id + '/refresh').catch(() => {});
       await refreshAll();
+      refreshingId = null;
+      refreshingId = null;
     } catch (e) {
       const msg = String(e);
       if (msg.includes('只支持 ChatGPT')) { unsupportedModal = true; }
@@ -72,8 +78,10 @@
         });
       }
       // Refresh quota for the overwritten account
+      refreshingId = duplicate;
       api('POST', '/api/accounts/' + duplicate + '/refresh').catch(() => {});
       await refreshAll();
+      refreshingId = null;
       duplicate = null;
       pendingImport = null;
     } catch (e) {
@@ -230,6 +238,9 @@
               <div class="quota-bar">
                 <div class="quota-fill" style="width: {account.quota?.weekly_percent || 0}%"></div>
               </div>
+              {#if refreshingId === account.id}
+                <span class="refresh-spin">⟳</span>
+              {/if}
               <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}>{account.quota?.weekly_percent || 0}%</span>
               <span class="quota-col">5h</span>
             </div>
@@ -310,6 +321,8 @@
   }
   .quota-pct { font-size: 12px; font-weight: 600; width: 32px; text-align: right; }
   .quota-pct.low { color: var(--warning); }
+  .refresh-spin { font-size: 14px; color: var(--accent); animation: spin 1s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   .quota-col { font-size: 10px; color: var(--text-muted); width: 24px; text-align: right; }
 
   .account-actions { display: flex; gap: 6px; flex-shrink: 0; }
