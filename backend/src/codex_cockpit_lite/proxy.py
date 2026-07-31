@@ -7,6 +7,7 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .auth import build_auth_headers, build_search_headers
 from .config import list_selected_accounts, load_config
 from .models import SpeedMode
+from .quota import refresh_quota
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +99,39 @@ def switch_to_next_account(config_dir: Path | None = None) -> dict | None:
     return _account_payload(meta)
 
 
+async def _refresh_quotas_and_select_account(
+    current_id: str,
+    config_dir: Path | None = None,
+) -> dict | None:
+    """Refresh selected accounts in order and keep or advance the active cursor."""
+    accounts = list_selected_accounts(config_dir)
+    for account in accounts:
+        account.quota = await refresh_quota(account.id, config_dir)
+
+    current = next(
+        (
+            account
+            for account in accounts
+            if account.id == current_id and is_account_schedulable(account)
+        ),
+        None,
+    )
+    selected = current or _next_schedulable_account(accounts, current_id)
+
+    global _active_account_id
+    with _account_switch_lock:
+        _active_account_id = selected.id if selected else ""
+
+    if selected is None:
+        logger.warning("No account remains available after quota refresh")
+        return None
+    if selected.id == current_id:
+        logger.info("Account %s still has quota; retrying it", selected.email)
+    else:
+        logger.info("Account %s is exhausted; switching to %s", current_id, selected.email)
+    return _account_payload(selected)
+
+
 def activate_account(account_id: str, config_dir: Path | None = None) -> dict | None:
     """Force the active cursor to a specific selected, schedulable account."""
     accounts = list_selected_accounts(config_dir)
@@ -146,14 +181,18 @@ def get_active_index(config_dir: Path | None = None) -> int:
 
 
 def _build_upstream_headers(
-    request_headers: dict[str, str], auth_headers: dict[str, str]
+    request_headers: dict[str, str],
+    auth_headers: dict[str, str],
+    *,
+    add_originator: bool = True,
 ) -> dict[str, str]:
     """Overlay trusted auth without emitting case-variant duplicate headers."""
     headers = {name.lower(): value for name, value in request_headers.items()}
     for name in ("host", "connection", "transfer-encoding", "content-length"):
         headers.pop(name, None)
     headers.update({name.lower(): value for name, value in auth_headers.items()})
-    headers.setdefault("originator", "codex-tui")
+    if add_originator:
+        headers.setdefault("originator", "codex-tui")
     return headers
 
 
@@ -265,68 +304,17 @@ async def proxy_images_edits(request: Request, config_dir: Path | None = None) -
 
 async def proxy_alpha_search(request: Request, config_dir: Path | None = None) -> Response:
     """Proxy /v1/alpha/search to ChatGPT backend (OAuth only)."""
-    upstream = f"{CHATGPT_BASE}/backend-api/codex/alpha/search"
-
-    account = get_active_account(config_dir)
-    if not account:
-        return JSONResponse(
-            {"error": "No active account configured"},
-            status_code=503,
-        )
-
-    try:
-        headers = build_search_headers(account["id"], config_dir)
-    except (OSError, ValueError) as error:
-        return JSONResponse({"error": str(error)}, status_code=500)
-
-    body = await request.body()
-    start = time.time()
-
-    try:
-        async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
-            resp = await client.post(
-                upstream,
-                content=body,
-                headers={**headers, "Content-Type": "application/json"},
-            )
-        duration_ms = int((time.time() - start) * 1000)
-
-        record_request(
-            {
-                "id": str(uuid.uuid4()),
-                "timestamp": time.time(),
-                "account_id": account["id"],
-                "account_email": account["email"],
-                "method": "POST",
-                "path": "/v1/alpha/search",
-                "model": "",
-                "status": resp.status_code,
-                "duration_ms": duration_ms,
-            }
-        )
-
-        return Response(
-            content=resp.content,
-            status_code=resp.status_code,
-            headers=_build_downstream_headers(resp.headers, decoded=True),
-        )
-    except httpx.HTTPError as error:
-        duration_ms = int((time.time() - start) * 1000)
-        record_request(
-            {
-                "id": str(uuid.uuid4()),
-                "timestamp": time.time(),
-                "account_id": account["id"],
-                "account_email": account["email"],
-                "method": "POST",
-                "path": "/v1/alpha/search",
-                "model": "",
-                "status": 502,
-                "duration_ms": duration_ms,
-                "error": str(error),
-            }
-        )
-        return JSONResponse({"error": f"Upstream error: {error}"}, status_code=502)
+    return await _proxy_with_retry(
+        request,
+        f"{CHATGPT_BASE}/backend-api/codex/alpha/search",
+        config_dir,
+        auth_header_builder=build_search_headers,
+        extra_headers={"Content-Type": "application/json"},
+        forward_request_headers=False,
+        forward_query=False,
+        apply_speed_header=False,
+        add_originator=False,
+    )
 
 
 async def _proxy_with_retry(
@@ -335,11 +323,18 @@ async def _proxy_with_retry(
     config_dir: Path | None = None,
     is_sse: bool = False,
     max_retries: int = 8,
+    auth_header_builder: Callable[[str, Path | None], dict[str, str]] = build_auth_headers,
+    extra_headers: dict[str, str] | None = None,
+    forward_request_headers: bool = True,
+    forward_query: bool = True,
+    apply_speed_header: bool = True,
+    add_originator: bool = True,
 ) -> Response:
     """Proxy a request to upstream, retrying with next account on 429 or rate-limit."""
     cfg = load_config(config_dir)
     auto_switch = cfg.api.auto_switch
-    upstream_url = _with_original_query(request, upstream_url)
+    if forward_query:
+        upstream_url = _with_original_query(request, upstream_url)
 
     for attempt in range(max_retries + 1):
         account = get_active_account(config_dir)
@@ -350,7 +345,7 @@ async def _proxy_with_retry(
             )
 
         try:
-            headers = build_auth_headers(account["id"], config_dir)
+            headers = auth_header_builder(account["id"], config_dir)
         except (OSError, ValueError) as error:
             logger.warning("Auth header build failed for %s: %s", account["id"], error)
             if auto_switch.enabled and attempt < max_retries:
@@ -359,12 +354,19 @@ async def _proxy_with_retry(
             return JSONResponse({"error": str(error)}, status_code=500)
 
         # Add service_tier header based on speed config
-        if cfg.api.speed == SpeedMode.FAST:
+        if apply_speed_header and cfg.api.speed == SpeedMode.FAST:
             headers["service_tier"] = "priority"
+        if extra_headers:
+            headers.update(extra_headers)
 
         # Forward request
         body = await request.body()
-        req_headers = _build_upstream_headers(dict(request.headers), headers)
+        request_headers = dict(request.headers) if forward_request_headers else {}
+        req_headers = _build_upstream_headers(
+            request_headers,
+            headers,
+            add_originator=add_originator,
+        )
 
         start = time.time()
         client: httpx.AsyncClient | None = None
@@ -410,13 +412,6 @@ async def _proxy_with_retry(
                     account["email"],
                     attempt + 1,
                 )
-                if auto_switch.enabled and attempt < max_retries:
-                    if is_sse:
-                        await _read_and_close_upstream(upstream_resp, client)
-                    else:
-                        await client.aclose()
-                    switch_to_next_account(config_dir)
-                    continue
                 content = (
                     await _read_and_close_upstream(upstream_resp, client)
                     if is_sse
@@ -424,6 +419,15 @@ async def _proxy_with_retry(
                 )
                 if not is_sse:
                     await client.aclose()
+                if auto_switch.enabled:
+                    selected = await _refresh_quotas_and_select_account(account["id"], config_dir)
+                    if selected is None:
+                        return JSONResponse(
+                            {"error": "All accounts exhausted"},
+                            status_code=429,
+                        )
+                    if attempt < max_retries:
+                        continue
                 return Response(
                     content=content,
                     status_code=429,
@@ -465,7 +469,7 @@ async def _proxy_with_retry(
                     headers=_build_downstream_headers(upstream_resp.headers, decoded=True),
                 )
 
-        except (httpx.ConnectError, httpx.TimeoutException) as e:
+        except httpx.HTTPError as e:
             if client is not None:
                 await client.aclose()
             duration_ms = int((time.time() - start) * 1000)

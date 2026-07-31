@@ -328,6 +328,82 @@ def test_scheduler_requires_both_quotas_and_cycles_in_config_order(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_refreshes_accounts_in_order_and_keeps_current_when_available(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for account_id in ["first", "second", "third"]:
+        save_meta(
+            AccountMeta(
+                id=account_id,
+                email=f"{account_id}@example.com",
+                quota=QuotaSnapshot(weekly_percent=50, hourly_percent=50),
+            ),
+            tmp_path,
+        )
+    cfg = load_config(tmp_path)
+    cfg.api.selected_accounts = ["first", "second", "third"]
+    save_config(cfg, tmp_path)
+    activate_account("second", tmp_path)
+    refresh_order: list[str] = []
+
+    async def fake_refresh(account_id: str, config_dir=None) -> QuotaSnapshot:
+        assert config_dir == tmp_path
+        refresh_order.append(account_id)
+        return QuotaSnapshot(weekly_percent=25, hourly_percent=25, queried_at=1)
+
+    monkeypatch.setattr(proxy_module, "refresh_quota", fake_refresh)
+
+    selected = await proxy_module._refresh_quotas_and_select_account("second", tmp_path)
+
+    assert refresh_order == ["first", "second", "third"]
+    assert selected["id"] == "second"
+    assert get_active_account(tmp_path)["id"] == "second"
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_switches_after_refresh_or_reports_all_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for account_id in ["first", "second", "third"]:
+        save_meta(
+            AccountMeta(
+                id=account_id,
+                email=f"{account_id}@example.com",
+                quota=QuotaSnapshot(weekly_percent=50, hourly_percent=50),
+            ),
+            tmp_path,
+        )
+    cfg = load_config(tmp_path)
+    cfg.api.selected_accounts = ["first", "second", "third"]
+    save_config(cfg, tmp_path)
+    activate_account("first", tmp_path)
+    remaining = {
+        "first": QuotaSnapshot(weekly_percent=0, hourly_percent=50, queried_at=1),
+        "second": QuotaSnapshot(weekly_percent=40, hourly_percent=30, queried_at=1),
+        "third": QuotaSnapshot(weekly_percent=20, hourly_percent=10, queried_at=1),
+    }
+
+    async def fake_refresh(account_id: str, config_dir=None) -> QuotaSnapshot:
+        assert config_dir == tmp_path
+        return remaining[account_id]
+
+    monkeypatch.setattr(proxy_module, "refresh_quota", fake_refresh)
+
+    selected = await proxy_module._refresh_quotas_and_select_account("first", tmp_path)
+    assert selected["id"] == "second"
+
+    remaining.update(
+        {
+            account_id: QuotaSnapshot(weekly_percent=0, hourly_percent=0, queried_at=2)
+            for account_id in remaining
+        }
+    )
+    selected = await proxy_module._refresh_quotas_and_select_account("second", tmp_path)
+    assert selected is None
+    assert proxy_module._active_account_id == ""
+
+
+@pytest.mark.asyncio
 async def test_force_activate_and_reorder_accounts(tmp_path: Path) -> None:
     for account_id in ["first", "second", "third"]:
         save_meta(
@@ -661,26 +737,181 @@ async def test_images_use_chatgpt_codex_upstream(
 
 
 @pytest.mark.asyncio
+async def test_429_refreshes_all_accounts_then_retries_with_next_available(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for account_id in ["first", "second"]:
+        save_meta(
+            AccountMeta(
+                id=account_id,
+                email=f"{account_id}@example.com",
+                quota=QuotaSnapshot(weekly_percent=50, hourly_percent=50),
+            ),
+            tmp_path,
+        )
+    cfg = load_config(tmp_path)
+    cfg.api.selected_accounts = ["first", "second"]
+    save_config(cfg, tmp_path)
+    activate_account("first", tmp_path)
+    auth_accounts: list[str] = []
+    refresh_order: list[str] = []
+
+    class FakeRequest:
+        method = "POST"
+
+        class url:
+            path = "/v1/responses"
+            query = ""
+
+        def __init__(self) -> None:
+            self.headers = {}
+
+        async def body(self) -> bytes:
+            return b'{"model":"gpt-5.6-terra"}'
+
+    class FakeClient:
+        response_statuses = iter([429, 200])
+
+        def __init__(self, **kwargs):
+            del kwargs
+
+        async def request(self, **kwargs):
+            del kwargs
+            return httpx.Response(next(self.response_statuses), content=b'{"ok":true}')
+
+        async def aclose(self) -> None:
+            return None
+
+    def fake_auth(account_id: str, config_dir=None) -> dict[str, str]:
+        assert config_dir == tmp_path
+        auth_accounts.append(account_id)
+        return {"Authorization": f"Bearer {account_id}"}
+
+    async def fake_refresh(account_id: str, config_dir=None) -> QuotaSnapshot:
+        assert config_dir == tmp_path
+        refresh_order.append(account_id)
+        if account_id == "first":
+            return QuotaSnapshot(weekly_percent=0, hourly_percent=50, queried_at=1)
+        return QuotaSnapshot(weekly_percent=50, hourly_percent=50, queried_at=1)
+
+    monkeypatch.setattr(proxy_module.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(proxy_module, "build_auth_headers", fake_auth)
+    monkeypatch.setattr(proxy_module, "refresh_quota", fake_refresh)
+
+    response = await proxy_module._proxy_with_retry(
+        FakeRequest(),
+        "https://chatgpt.com/backend-api/codex/responses",
+        tmp_path,
+        auth_header_builder=fake_auth,
+    )
+
+    assert response.status_code == 200
+    assert auth_accounts == ["first", "second"]
+    assert refresh_order == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_429_returns_immediately_when_refreshed_accounts_are_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    save_meta(
+        AccountMeta(
+            id="only",
+            email="only@example.com",
+            quota=QuotaSnapshot(weekly_percent=50, hourly_percent=50),
+        ),
+        tmp_path,
+    )
+    cfg = load_config(tmp_path)
+    cfg.api.selected_accounts = ["only"]
+    save_config(cfg, tmp_path)
+    activate_account("only", tmp_path)
+    upstream_calls = 0
+
+    class FakeRequest:
+        method = "POST"
+
+        class url:
+            path = "/v1/responses"
+            query = ""
+
+        def __init__(self) -> None:
+            self.headers = {}
+
+        async def body(self) -> bytes:
+            return b"{}"
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        async def request(self, **kwargs):
+            nonlocal upstream_calls
+            del kwargs
+            upstream_calls += 1
+            return httpx.Response(429, content=b'{"error":"quota"}')
+
+        async def aclose(self) -> None:
+            return None
+
+    async def fake_refresh(account_id: str, config_dir=None) -> QuotaSnapshot:
+        assert account_id == "only"
+        assert config_dir == tmp_path
+        return QuotaSnapshot(weekly_percent=0, hourly_percent=0, queried_at=1)
+
+    monkeypatch.setattr(proxy_module.httpx, "AsyncClient", FakeClient)
+
+    def fake_auth(account_id: str, config_dir=None) -> dict[str, str]:
+        assert account_id == "only"
+        assert config_dir == tmp_path
+        return {"Authorization": "Bearer test"}
+
+    monkeypatch.setattr(proxy_module, "refresh_quota", fake_refresh)
+
+    response = await proxy_module._proxy_with_retry(
+        FakeRequest(),
+        "https://chatgpt.com/backend-api/codex/responses",
+        tmp_path,
+        auth_header_builder=fake_auth,
+    )
+
+    assert response.status_code == 429
+    assert json.loads(response.body) == {"error": "All accounts exhausted"}
+    assert upstream_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_alpha_search_drops_stale_decoded_encoding_headers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     content = b'{"output":"ok"}'
 
     class FakeRequest:
+        method = "POST"
+
+        class url:
+            path = "/v1/alpha/search"
+            query = "must=not-forward"
+
+        def __init__(self) -> None:
+            self.headers = {"X-Client-Only": "must-not-forward"}
+
         async def body(self) -> bytes:
             return b'{"model":"gpt-5.6-terra","commands":{}}'
 
     class FakeClient:
-        async def __aenter__(self):
-            return self
+        def __init__(self, **kwargs):
+            del kwargs
 
-        async def __aexit__(self, exc_type, exc, traceback) -> None:
-            del exc_type, exc, traceback
-
-        async def post(self, url, *, content, headers):
+        async def request(self, *, method, url, content, headers):
+            assert method == "POST"
             assert url == "https://chatgpt.com/backend-api/codex/alpha/search"
             assert content == b'{"model":"gpt-5.6-terra","commands":{}}'
-            assert headers["Content-Type"] == "application/json"
+            assert headers["content-type"] == "application/json"
+            assert headers["authorization"] == "Bearer test"
+            assert "x-client-only" not in headers
+            assert "originator" not in headers
+            assert "service_tier" not in headers
             return httpx.Response(
                 200,
                 content=gzip.compress(content_bytes),
@@ -690,6 +921,9 @@ async def test_alpha_search_drops_stale_decoded_encoding_headers(
                     "X-Request-Id": "search-request-1",
                 },
             )
+
+        async def aclose(self) -> None:
+            return None
 
     content_bytes = content
     monkeypatch.setattr(
@@ -705,7 +939,7 @@ async def test_alpha_search_drops_stale_decoded_encoding_headers(
         "build_search_headers",
         lambda account_id, config_dir=None: {"Authorization": "Bearer test"},
     )
-    monkeypatch.setattr(proxy_module.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    monkeypatch.setattr(proxy_module.httpx, "AsyncClient", FakeClient)
 
     response = await proxy_module.proxy_alpha_search(FakeRequest(), tmp_path)
 
