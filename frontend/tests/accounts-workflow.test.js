@@ -23,6 +23,8 @@ function account(overrides = {}) {
     plan_type: '',
     subscription_expires_at: null,
     team_name: '',
+    requires_reauth: false,
+    reauth_reason: '',
     quota: {
       weekly_percent: 0,
       hourly_percent: 0,
@@ -70,6 +72,108 @@ test('首次账号请求完成前显示骨架，明确返回空数组后才显�
   expect(screen.queryByText('正在读取账号…')).toBeNull();
   expect(screen.getByRole('button', { name: '从 ~/.codex 导入' }).disabled).toBe(false);
   expect(screen.getByRole('button', { name: '导入 auth.json' }).disabled).toBe(false);
+  const headerButtons = screen
+    .getByRole('heading', { name: '账号管理' })
+    .parentElement.querySelectorAll('button');
+  expect([...headerButtons].map((button) => button.textContent.trim())).toEqual([
+    '浏览器登录',
+    '从 ~/.codex 导入',
+    '导入 auth.json',
+  ]);
+});
+
+test('认证失效账号显示空额度，并用重新登录替换切换和刷新', async () => {
+  const invalid = account({
+    requires_reauth: true,
+    reauth_reason: 'refresh_token_invalidated',
+    quota: {
+      weekly_percent: null,
+      hourly_percent: null,
+      weekly_resets_at: null,
+      hourly_resets_at: null,
+      queried_at: 0,
+    },
+  });
+  const apiClient = vi.fn((method, path) => {
+    if (method === 'GET' && path === '/api/config') return Promise.resolve(config(['account-1']));
+    if (method === 'GET' && path === '/api/accounts') return Promise.resolve([invalid]);
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+
+  render(Accounts, { apiClient, browserLoginClient: vi.fn(), pollIntervalMs: 0 });
+  const card = (await screen.findByText('test@example.com')).closest('.account-card');
+
+  expect(within(card).getByText('需要重新登录')).toBeTruthy();
+  expect(within(card).getAllByText('--')).toHaveLength(4);
+  const reauthButton = within(card).getByRole('button', { name: '重新登录 test@example.com' });
+  expect(reauthButton.classList.contains('reauth-action')).toBe(true);
+  expect(within(card).queryByRole('button', { name: '切换' })).toBeNull();
+  expect(within(card).queryByRole('button', { name: '刷新 test@example.com' })).toBeNull();
+});
+
+test('顶部浏览器登录作为独立入口添加账号', async () => {
+  const added = account({
+    quota: {
+      weekly_percent: 90,
+      hourly_percent: 80,
+      weekly_resets_at: 100,
+      hourly_resets_at: 200,
+      queried_at: 1,
+    },
+  });
+  const apiClient = vi.fn((method, path) => {
+    if (method === 'GET' && path === '/api/config') return Promise.resolve(config());
+    if (method === 'GET' && path === '/api/accounts') return Promise.resolve([]);
+    if (method === 'POST' && path === '/api/accounts/account-1/refresh') {
+      return Promise.resolve(added);
+    }
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+  const browserLoginClient = vi.fn().mockResolvedValue(added);
+
+  render(Accounts, { apiClient, browserLoginClient, pollIntervalMs: 0 });
+  await screen.findByText('还没有导入账号。点击上方按钮导入 auth.json。');
+  await fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }));
+
+  await waitFor(() => expect(browserLoginClient).toHaveBeenCalledWith(null));
+  expect(await screen.findByText('test@example.com')).toBeTruthy();
+  expect(screen.getByText('浏览器登录成功')).toBeTruthy();
+});
+
+test('重新登录到不同账号时新增账号并保留旧账号失效状态', async () => {
+  const invalid = account({ requires_reauth: true, reauth_reason: 'expired' });
+  const added = account({
+    id: 'account-2',
+    name: 'Other',
+    email: 'other@example.com',
+    quota: {
+      weekly_percent: 90,
+      hourly_percent: 80,
+      weekly_resets_at: 100,
+      hourly_resets_at: 200,
+      queried_at: 1,
+    },
+  });
+  const apiClient = vi.fn((method, path) => {
+    if (method === 'GET' && path === '/api/config') return Promise.resolve(config(['account-1']));
+    if (method === 'GET' && path === '/api/accounts') return Promise.resolve([invalid]);
+    if (method === 'POST' && path === '/api/accounts/account-2/refresh') {
+      return Promise.resolve(added);
+    }
+    return Promise.reject(new Error(`Unexpected API call: ${method} ${path}`));
+  });
+  const browserLoginClient = vi.fn().mockResolvedValue(added);
+
+  render(Accounts, { apiClient, browserLoginClient, pollIntervalMs: 0 });
+  await screen.findByText('test@example.com');
+  await fireEvent.click(screen.getByRole('button', { name: '重新登录 test@example.com' }));
+
+  await waitFor(() => expect(browserLoginClient).toHaveBeenCalledWith('account-1'));
+  expect(await screen.findByText('other@example.com')).toBeTruthy();
+  expect(screen.getByText('test@example.com')).toBeTruthy();
+  expect(screen.getByText(/原账号仍需重新登录/)).toBeTruthy();
+  const oldCard = screen.getByText('test@example.com').closest('.account-card');
+  expect(within(oldCard).getByText('需要重新登录')).toBeTruthy();
 });
 
 test('首次账号请求失败后可重试，并在重试期间恢复骨架状态', async () => {

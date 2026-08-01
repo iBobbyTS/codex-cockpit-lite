@@ -16,6 +16,7 @@ import uvicorn
 
 import codex_cockpit_lite.main as main_module
 import codex_cockpit_lite.proxy as proxy_module
+import codex_cockpit_lite.quota as quota_module
 import codex_cockpit_lite.status as status_module
 from codex_cockpit_lite.api import get_config_dir_info, set_api_config_dir
 from codex_cockpit_lite.auth import (
@@ -57,7 +58,7 @@ from codex_cockpit_lite.quota import _collect_records, _parse_timestamp
 from codex_cockpit_lite.status import build_service_url, find_active_lan_address
 
 
-def chatgpt_auth(email: str = "test@example.com") -> dict:
+def chatgpt_auth(email: str = "test@example.com", account_id: str = "account-1") -> dict:
     key = "test-key-with-at-least-thirty-two-bytes"
     id_token = jwt.encode({"email": email}, key, algorithm="HS256")
     return {
@@ -66,7 +67,7 @@ def chatgpt_auth(email: str = "test@example.com") -> dict:
             "id_token": id_token,
             "access_token": jwt.encode({"exp": int(time.time()) + 3600}, key, algorithm="HS256"),
             "refresh_token": "refresh-token",
-            "account_id": "account-1",
+            "account_id": account_id,
         },
     }
 
@@ -944,6 +945,116 @@ async def test_401_refresh_rejection_preserves_auth_and_original_upstream_error(
     assert response.body == b'{"error":{"code":"token_revoked"}}'
     assert upstream_calls == 1
     assert json.loads((account_path / "auth.json").read_text()) == json.loads(original_json)
+    invalidated = load_meta(account_id, tmp_path)
+    assert invalidated is not None
+    assert invalidated.requires_reauth is True
+    assert invalidated.quota.weekly_percent is None
+    assert invalidated.quota.hourly_percent is None
+    assert invalidated.quota.weekly_resets_at is None
+    assert invalidated.quota.hourly_resets_at is None
+
+
+@pytest.mark.asyncio
+async def test_quota_failure_clears_cached_percentages_and_dates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    account_id = "account-1"
+    account_path = tmp_path / "accounts" / account_id
+    account_path.mkdir(parents=True)
+    (account_path / "auth.json").write_text(json.dumps(chatgpt_auth()))
+    save_meta(
+        AccountMeta(
+            id=account_id,
+            email="test@example.com",
+            quota=QuotaSnapshot(
+                weekly_percent=100,
+                hourly_percent=100,
+                weekly_resets_at=123,
+                hourly_resets_at=456,
+                queried_at=789,
+            ),
+        ),
+        tmp_path,
+    )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            del args
+
+        async def get(self, url, *, headers):
+            del url, headers
+            return httpx.Response(503, request=httpx.Request("GET", "https://example.test"))
+
+    monkeypatch.setattr(quota_module.httpx, "AsyncClient", FakeClient)
+
+    result = await quota_module.refresh_quota(account_id, tmp_path)
+    saved = load_meta(account_id, tmp_path)
+
+    assert result == QuotaSnapshot()
+    assert saved is not None
+    assert saved.requires_reauth is False
+    assert saved.quota == QuotaSnapshot()
+
+
+@pytest.mark.asyncio
+async def test_quota_401_with_invalid_refresh_marks_account_for_reauth(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    account_id = "account-1"
+    account_path = tmp_path / "accounts" / account_id
+    account_path.mkdir(parents=True)
+    (account_path / "auth.json").write_text(json.dumps(chatgpt_auth()))
+    save_meta(
+        AccountMeta(
+            id=account_id,
+            email="test@example.com",
+            quota=QuotaSnapshot(weekly_percent=100, hourly_percent=100, queried_at=1),
+        ),
+        tmp_path,
+    )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            del args
+
+        async def get(self, url, *, headers):
+            del url, headers
+            return httpx.Response(401, request=httpx.Request("GET", "https://example.test"))
+
+    def rejected_refresh(url, *, data, timeout):
+        del url, data, timeout
+        return httpx.Response(
+            401,
+            json={
+                "error": {
+                    "code": "refresh_token_invalidated",
+                    "message": "Your session has ended. Please log in again.",
+                }
+            },
+        )
+
+    monkeypatch.setattr(quota_module.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr("codex_cockpit_lite.auth.httpx.post", rejected_refresh)
+
+    await quota_module.refresh_quota(account_id, tmp_path)
+    saved = load_meta(account_id, tmp_path)
+
+    assert saved is not None
+    assert saved.requires_reauth is True
+    assert "refresh_token_invalidated" in saved.reauth_reason
+    assert saved.quota == QuotaSnapshot()
 
 
 @pytest.mark.parametrize(
@@ -1343,6 +1454,87 @@ async def test_manual_import_separates_automatic_and_display_names(
         assert response.status_code == 200
         assert response.json()["name"] == "test"
         assert response.json()["display_name"] == expected_display_name
+    finally:
+        set_api_config_dir(get_config_dir())
+
+
+@pytest.mark.asyncio
+async def test_browser_login_replaces_matching_account_and_clears_reauth(
+    tmp_path: Path,
+) -> None:
+    existing_id = "existing-account"
+    save_meta(
+        AccountMeta(
+            id=existing_id,
+            name="Old Name",
+            display_name="SCSC",
+            email="test@example.com",
+            account_id="account-1",
+            requires_reauth=True,
+            reauth_reason="expired",
+            quota=QuotaSnapshot(weekly_percent=100, hourly_percent=100, queried_at=1),
+        ),
+        tmp_path,
+    )
+    set_api_config_dir(tmp_path)
+    replacement = chatgpt_auth()
+    replacement["tokens"]["refresh_token"] = "replacement-refresh-token"
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/accounts/browser-login",
+                json={"auth_json": replacement, "reauth_account_id": None},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["id"] == existing_id
+        assert response.json()["display_name"] == "SCSC"
+        assert response.json()["requires_reauth"] is False
+        assert response.json()["quota"] == QuotaSnapshot().model_dump()
+        saved_auth = json.loads((tmp_path / "accounts" / existing_id / "auth.json").read_text())
+        assert saved_auth["tokens"]["refresh_token"] == "replacement-refresh-token"
+        assert len(list((tmp_path / "accounts").iterdir())) == 1
+    finally:
+        set_api_config_dir(get_config_dir())
+
+
+@pytest.mark.asyncio
+async def test_reauth_with_different_identity_adds_account_and_keeps_old_invalid(
+    tmp_path: Path,
+) -> None:
+    old_id = "old-account"
+    save_meta(
+        AccountMeta(
+            id=old_id,
+            email="old@example.com",
+            account_id="old-chatgpt-account",
+            requires_reauth=True,
+            reauth_reason="expired",
+        ),
+        tmp_path,
+    )
+    set_api_config_dir(tmp_path)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/accounts/browser-login",
+                json={
+                    "auth_json": chatgpt_auth("new@example.com", "new-chatgpt-account"),
+                    "reauth_account_id": old_id,
+                },
+            )
+
+        assert response.status_code == 200
+        new_id = response.json()["id"]
+        assert new_id != old_id
+        assert response.json()["email"] == "new@example.com"
+        old = load_meta(old_id, tmp_path)
+        assert old is not None
+        assert old.requires_reauth is True
+        assert old.reauth_reason == "expired"
+        assert len(list((tmp_path / "accounts").iterdir())) == 2
     finally:
         set_api_config_dir(get_config_dir())
 

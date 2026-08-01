@@ -15,7 +15,9 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .account_state import mark_requires_reauth
 from .auth import (
+    OAuthReauthRequiredError,
     OAuthRefreshError,
     build_auth_headers,
     build_search_headers,
@@ -41,7 +43,11 @@ _recent_requests: list[dict] = []
 
 def is_account_schedulable(account) -> bool:
     """An account is usable until either the 5h or 7d quota is 100% consumed."""
-    return account.quota.hourly_percent > 0 and account.quota.weekly_percent > 0
+    return (
+        not account.requires_reauth
+        and (account.quota.hourly_percent or 0) > 0
+        and (account.quota.weekly_percent or 0) > 0
+    )
 
 
 def _account_payload(account) -> dict:
@@ -352,8 +358,10 @@ async def _proxy_with_retry(
 
         try:
             headers = auth_header_builder(account["id"], config_dir)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, OAuthRefreshError) as error:
             logger.warning("Auth header build failed for %s: %s", account["id"], error)
+            if isinstance(error, OAuthReauthRequiredError):
+                mark_requires_reauth(account["id"], str(error), config_dir)
             if auto_switch.enabled and attempt < max_retries:
                 switch_to_next_account(config_dir)
                 continue
@@ -447,6 +455,8 @@ async def _proxy_with_retry(
                         account["email"],
                         error,
                     )
+                    if isinstance(error, OAuthReauthRequiredError):
+                        mark_requires_reauth(account["id"], str(error), config_dir)
                     return Response(
                         content=rejected_content,
                         status_code=401,

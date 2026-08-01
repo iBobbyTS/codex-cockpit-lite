@@ -2,6 +2,7 @@
 
 | file | summary |
 | --- | --- |
+| active/scsc-refresh-token-invalidated.md | Adding persistent reauth state, blank unavailable quota, and identity-aware PKCE browser login after confirmed access and refresh token invalidation. |
 
 ## Unresolved
 

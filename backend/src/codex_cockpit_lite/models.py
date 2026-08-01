@@ -44,8 +44,8 @@ class AppConfig(BaseModel):
 
 
 class QuotaSnapshot(BaseModel):
-    weekly_percent: int = 0
-    hourly_percent: int = 0
+    weekly_percent: int | None = None
+    hourly_percent: int | None = None
     weekly_resets_at: int | None = None
     hourly_resets_at: int | None = None
     queried_at: int = 0
@@ -62,6 +62,8 @@ class AccountMeta(BaseModel):
     team_name: str = ""
     account_id: str = ""
     quota: QuotaSnapshot = Field(default_factory=QuotaSnapshot)
+    requires_reauth: bool = False
+    reauth_reason: str = ""
     enabled: bool = True
     speed: SpeedMode = SpeedMode.STANDARD
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import suppress
@@ -9,9 +10,13 @@ from pathlib import Path
 
 import httpx
 
+from .account_state import clear_quota, mark_requires_reauth
 from .auth import (
+    OAuthReauthRequiredError,
+    OAuthRefreshError,
     build_auth_headers,
     extract_account_id_from_access_token,
+    force_refresh_oauth_token,
     parse_auth_file,
     validate_chatgpt_auth,
 )
@@ -30,18 +35,18 @@ REQUEST_TIMEOUT = 30.0
 async def refresh_quota(account_id: str, config_dir: Path | None = None) -> QuotaSnapshot:
     """Fetch quota from wham/usage endpoint."""
     try:
-        headers = await _build_quota_headers(account_id, config_dir)
-    except (OSError, ValueError) as error:
-        logger.warning("Cannot build headers for quota query %s: %s", account_id, error)
-        return QuotaSnapshot()
-
-    try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.get(USAGE_URL, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-    except (httpx.HTTPError, ValueError) as error:
+        data = await _get_json_with_oauth_retry(
+            USAGE_URL,
+            account_id,
+            config_dir,
+            _build_quota_headers,
+        )
+    except (OSError, ValueError, httpx.HTTPError, OAuthRefreshError) as error:
         logger.warning("Quota fetch failed for %s: %s", account_id, error)
+        if isinstance(error, OAuthReauthRequiredError):
+            mark_requires_reauth(account_id, str(error), config_dir)
+        else:
+            clear_quota(account_id, config_dir)
         return QuotaSnapshot()
 
     rate_limit = data.get("rate_limit", {}) or {}
@@ -82,18 +87,17 @@ async def refresh_subscription(
 ) -> AccountMeta | None:
     """Fetch subscription info from accounts/check endpoint."""
     try:
+        data = await _get_json_with_oauth_retry(
+            ACCOUNTS_CHECK_URL,
+            account_id,
+            config_dir,
+            _build_subscription_headers,
+        )
         headers = await _build_subscription_headers(account_id, config_dir)
-    except (OSError, ValueError) as error:
-        logger.warning("Cannot build headers for subscription query %s: %s", account_id, error)
-        return None
-
-    try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.get(ACCOUNTS_CHECK_URL, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-    except (httpx.HTTPError, ValueError) as error:
+    except (OSError, ValueError, httpx.HTTPError, OAuthRefreshError) as error:
         logger.warning("Subscription fetch failed for %s: %s", account_id, error)
+        if isinstance(error, OAuthReauthRequiredError):
+            mark_requires_reauth(account_id, str(error), config_dir)
         return None
 
     snapshot = _parse_account_check(data, account_id, config_dir)
@@ -114,6 +118,39 @@ async def refresh_subscription(
         return meta
 
     return None
+
+
+async def _get_json_with_oauth_retry(
+    url: str,
+    account_id: str,
+    config_dir: Path | None,
+    header_builder,
+) -> dict:
+    """GET authenticated JSON, refreshing once when upstream rejects access."""
+    headers = await header_builder(account_id, config_dir)
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        response = await client.get(url, headers=headers)
+        if response.status_code == 401:
+            authorization = next(
+                (value for name, value in headers.items() if name.lower() == "authorization"),
+                "",
+            )
+            observed_access_token = authorization.removeprefix("Bearer ")
+            await asyncio.to_thread(
+                force_refresh_oauth_token,
+                account_id,
+                config_dir,
+                observed_access_token=observed_access_token or None,
+            )
+            headers = await header_builder(account_id, config_dir)
+            response = await client.get(url, headers=headers)
+            if response.status_code == 401:
+                raise OAuthReauthRequiredError("刷新凭据后仍被上游拒绝; 请重新登录")
+        response.raise_for_status()
+        data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("Upstream response is not a JSON object")
+    return data
 
 
 async def _build_quota_headers(account_id: str, config_dir: Path | None = None) -> dict:

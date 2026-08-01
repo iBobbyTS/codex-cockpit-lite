@@ -11,6 +11,7 @@ use tauri_plugin_shell::ShellExt;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop;
+mod oauth;
 
 const BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKEND_STOP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -548,6 +549,30 @@ async fn api_call(
         .map_err(|error| format!("后端请求任务失败: {error}"))?
 }
 
+#[tauri::command]
+async fn browser_login(
+    app: AppHandle,
+    reauth_account_id: Option<String>,
+) -> Result<String, String> {
+    let auth_json = oauth::login(app.clone()).await?;
+    let body = serde_json::json!({
+        "auth_json": auth_json,
+        "reauth_account_id": reauth_account_id,
+    })
+    .to_string();
+    let wait_app = app.clone();
+    let port = tauri::async_runtime::spawn_blocking(move || {
+        let state = wait_app.state::<BackendState>();
+        wait_for_backend(&state)
+    })
+    .await
+    .map_err(|error| format!("等待后端任务失败: {error}"))??;
+    let url = format!("http://127.0.0.1:{port}/api/accounts/browser-login");
+    tauri::async_runtime::spawn_blocking(move || proxy_request("POST", &url, Some(&body)))
+        .await
+        .map_err(|error| format!("保存浏览器登录账号失败: {error}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     log_line("[cockpit] App starting");
@@ -567,7 +592,7 @@ pub fn run() {
             tauri::async_runtime::spawn(start_backend(handle));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![api_call])
+        .invoke_handler(tauri::generate_handler![api_call, browser_login])
         .build(tauri::generate_context!())
         .expect("error while building Tauri application");
 

@@ -4,7 +4,7 @@ function padMinutes(value) {
 
 export function formatQuotaReset(resetAtSeconds, nowMs = Date.now()) {
   const resetAt = Number(resetAtSeconds);
-  if (!Number.isFinite(resetAt) || resetAt <= 0) return '-- (--)';
+  if (!Number.isFinite(resetAt) || resetAt <= 0) return '--';
 
   const resetMs = resetAt * 1000;
   const remainingMinutes = Math.max(0, Math.ceil((resetMs - nowMs) / 60_000));

@@ -6,12 +6,18 @@ import json
 import logging
 import shutil
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import ValidationError
 
-from .auth import extract_email_from_id_token
+from .account_state import clear_requires_reauth
+from .auth import (
+    _atomic_write_auth_file,
+    extract_account_id_from_access_token,
+    extract_email_from_id_token,
+)
 from .config import (
     account_dir,
     get_config_dir,
@@ -25,6 +31,7 @@ from .models import (
     AccountMeta,
     AppConfig,
     AuthMode,
+    QuotaSnapshot,
 )
 from .proxy import activate_account, get_active_account, is_account_schedulable
 from .quota import refresh_quota as py_refresh_quota
@@ -47,7 +54,12 @@ def _cd() -> Path:
 
 def _extract_account_id(auth_data: dict) -> str:
     """Extract account_id from tokens.account_id in auth.json."""
-    return (auth_data.get("tokens") or {}).get("account_id", "") or ""
+    tokens = auth_data.get("tokens") or {}
+    explicit = tokens.get("account_id", "") or ""
+    if explicit:
+        return explicit
+    access_token = tokens.get("access_token", "") or ""
+    return extract_account_id_from_access_token(access_token) or ""
 
 
 def _dedup_account(email: str, account_id: str):
@@ -61,6 +73,83 @@ def _dedup_account(email: str, account_id: str):
         if not meta.account_id or meta.account_id == account_id:
             return meta
     return None
+
+
+def _same_account_identity(meta: AccountMeta, email: str, account_id: str) -> bool:
+    if not email or meta.email.lower() != email.lower():
+        return False
+    return not meta.account_id or not account_id or meta.account_id == account_id
+
+
+def _auth_identity(auth_data: dict) -> tuple[str, str]:
+    tokens = auth_data.get("tokens")
+    if not isinstance(tokens, dict):
+        raise HTTPException(400, "浏览器登录缺少 tokens")
+    id_token = tokens.get("id_token")
+    access_token = tokens.get("access_token")
+    if not isinstance(id_token, str) or not id_token:
+        raise HTTPException(400, "浏览器登录缺少 id_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise HTTPException(400, "浏览器登录缺少 access_token")
+    email = extract_email_from_id_token(id_token)
+    if not email:
+        raise HTTPException(400, "无法识别浏览器登录账号")
+    return email, _extract_account_id(auth_data)
+
+
+def _select_browser_login_target(
+    email: str,
+    chatgpt_account_id: str,
+    reauth_account_id: str | None,
+) -> AccountMeta | None:
+    if reauth_account_id:
+        target = load_meta(reauth_account_id, _cd())
+        if target is None:
+            raise HTTPException(404, f"账号 {reauth_account_id} 不存在")
+        if _same_account_identity(target, email, chatgpt_account_id):
+            return target
+    return _dedup_account(email, chatgpt_account_id)
+
+
+def _persist_browser_login(
+    auth_data: dict,
+    reauth_account_id: str | None = None,
+) -> AccountMeta:
+    if auth_data.get("auth_mode") != "chatgpt":
+        raise HTTPException(400, "Codex Cockpit Lite 只支持 ChatGPT 登录")
+    email, chatgpt_account_id = _auth_identity(auth_data)
+    existing = _select_browser_login_target(email, chatgpt_account_id, reauth_account_id)
+    storage_id = existing.id if existing else str(uuid.uuid4())
+
+    auth_data["last_refresh"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    _atomic_write_auth_file(account_dir(storage_id, _cd()) / "auth.json", auth_data)
+
+    if existing:
+        meta = existing.model_copy(deep=True)
+        meta.name = email.split("@")[0]
+        meta.email = email
+        meta.auth_mode = AuthMode.OAUTH
+        meta.account_id = chatgpt_account_id
+        meta.quota = QuotaSnapshot()
+    else:
+        meta = AccountMeta(
+            id=storage_id,
+            name=email.split("@")[0],
+            email=email,
+            auth_mode=AuthMode.OAUTH,
+            account_id=chatgpt_account_id,
+        )
+    clear_requires_reauth(meta)
+    save_meta(meta, _cd())
+
+    cfg = load_config(_cd())
+    if storage_id not in cfg.api.account_order:
+        cfg.api.account_order.append(storage_id)
+    if storage_id not in cfg.api.selected_accounts:
+        cfg.api.selected_accounts.append(storage_id)
+    _apply_selected_order(cfg, cfg.api.account_order)
+    save_config(cfg, _cd())
+    return meta
 
 
 async def _read_optional_json_object(req: Request) -> dict:
@@ -305,6 +394,19 @@ async def import_from_codex(req: Request):
     return meta.model_dump()
 
 
+@router.post("/accounts/browser-login")
+async def browser_login_account(req: Request):
+    """Persist a completed PKCE browser login using identity-aware replacement."""
+    body = await _read_optional_json_object(req)
+    auth_data = body.get("auth_json")
+    if not isinstance(auth_data, dict):
+        raise HTTPException(400, "浏览器登录凭据格式无效")
+    reauth_account_id = body.get("reauth_account_id")
+    if reauth_account_id is not None and not isinstance(reauth_account_id, str):
+        raise HTTPException(400, "重新登录目标账号格式无效")
+    return _persist_browser_login(auth_data, reauth_account_id or None).model_dump()
+
+
 @router.put("/accounts/{account_id}/display-name")
 async def update_account_display_name(account_id: str, body: dict):
     meta = load_meta(account_id, _cd())
@@ -360,7 +462,9 @@ async def refresh_account(account_id: str):
         raise HTTPException(404, f"账号 {account_id} 不存在")
     try:
         await py_refresh_quota(account_id, _cd())
-        await py_refresh_subscription(account_id, _cd())
+        refreshed = load_meta(account_id, _cd())
+        if refreshed is not None and not refreshed.requires_reauth:
+            await py_refresh_subscription(account_id, _cd())
         meta = load_meta(account_id, _cd())
         if meta is None:
             raise HTTPException(404, f"账号 {account_id} 不存在")

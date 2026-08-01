@@ -3,16 +3,22 @@
   import { tick } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { apiClient as defaultApiClient } from '../lib/apiClient.js';
+  import { browserLogin as defaultBrowserLogin } from '../lib/browserLogin.js';
   import { getCodexPlanPresentation } from '../lib/codexPlans.js';
   import { formatQuotaReset } from '../lib/quotaTime.js';
 
-  let { apiClient = defaultApiClient, pollIntervalMs = 5000 } = $props();
+  let {
+    apiClient = defaultApiClient,
+    browserLoginClient = defaultBrowserLogin,
+    pollIntervalMs = 5000,
+  } = $props();
 
   let config = $state(null);
   let accounts = $state(null);
   let initialLoading = $state(true);
   let showImport = $state(false);
   let importing = $state(false);
+  let browserLoggingIn = $state(false);
   let deleteTarget = $state(null);
   let duplicate = $state(null);
   let pendingImport = $state(null);
@@ -69,7 +75,7 @@
           subscription_expires_at:
             imported.subscription_expires_at ?? current.subscription_expires_at,
           team_name: imported.team_name || current.team_name,
-          quota: imported.quota?.queried_at ? imported.quota : current.quota,
+          quota: imported.quota ?? current.quota,
         }
       : imported;
 
@@ -91,7 +97,15 @@
   }
 
   function hasRemainingQuota(account) {
-    return (account.quota?.weekly_percent ?? 0) > 0 && (account.quota?.hourly_percent ?? 0) > 0;
+    return (
+      !account.requires_reauth &&
+      (account.quota?.weekly_percent ?? 0) > 0 &&
+      (account.quota?.hourly_percent ?? 0) > 0
+    );
+  }
+
+  function formatQuotaPercentage(value) {
+    return Number.isFinite(value) ? `${value}%` : '--';
   }
 
   function replaceAccount(updated) {
@@ -254,6 +268,28 @@
       handleImportError(e, { fromCodex: true }, '从 ~/.codex 导入失败: ');
     } finally {
       importing = false;
+    }
+  }
+
+  async function loginWithBrowser(reauthAccountId = null) {
+    if (browserLoggingIn) return;
+    errorMsg = '';
+    noticeMsg = '';
+    browserLoggingIn = true;
+    try {
+      const result = await browserLoginClient(reauthAccountId);
+      showImportedAccount(result);
+      if (reauthAccountId && result.id !== reauthAccountId) {
+        noticeMsg = `登录的是另一个账号，已新增 ${result.email || accountTitle(result)}；原账号仍需重新登录`;
+      } else {
+        noticeMsg = reauthAccountId ? '重新登录成功' : '浏览器登录成功';
+      }
+      await refreshAccount(result.id);
+    } catch (e) {
+      errorMsg = (reauthAccountId ? '重新登录失败: ' : '浏览器登录失败: ') + String(e);
+      await refreshAll();
+    } finally {
+      browserLoggingIn = false;
     }
   }
 
@@ -422,6 +458,11 @@
   <div class="header">
     <h1>账号管理</h1>
     <div class="actions">
+      <button
+        onclick={() => loginWithBrowser()}
+        disabled={browserLoggingIn || importing || initialLoading || accounts === null}
+        >浏览器登录</button
+      >
       <button onclick={importOfficial} disabled={importing || initialLoading || accounts === null}
         >从 ~/.codex 导入</button
       >
@@ -466,6 +507,10 @@
 
   {#if importing}
     <div class="toast">正在导入...</div>
+  {/if}
+
+  {#if browserLoggingIn}
+    <div class="toast">正在等待浏览器登录...</div>
   {/if}
 
   {#if errorMsg}
@@ -598,6 +643,9 @@
                 {#if account.is_active}
                   <span class="active-indicator">当前调度</span>
                 {/if}
+                {#if account.requires_reauth}
+                  <span class="reauth-indicator">需要重新登录</span>
+                {/if}
               </div>
             </div>
             <div class="account-quota">
@@ -614,11 +662,14 @@
                 <div class="quota-bar">
                   <div
                     class="quota-fill"
-                    style="width: {account.quota?.weekly_percent || 0}%"
+                    style="width: {account.quota?.weekly_percent ?? 0}%"
                   ></div>
                 </div>
-                <span class="quota-pct" class:low={account.quota?.weekly_percent < 20}
-                  >{account.quota?.weekly_percent || 0}%</span
+                <span
+                  class="quota-pct"
+                  class:low={Number.isFinite(account.quota?.weekly_percent) &&
+                    account.quota.weekly_percent < 20}
+                  >{formatQuotaPercentage(account.quota?.weekly_percent)}</span
                 >
                 <span class="quota-reset"
                   >{formatQuotaReset(account.quota?.weekly_resets_at, nowMs)}</span
@@ -628,11 +679,14 @@
                 <div class="quota-bar">
                   <div
                     class="quota-fill"
-                    style="width: {account.quota?.hourly_percent || 0}%"
+                    style="width: {account.quota?.hourly_percent ?? 0}%"
                   ></div>
                 </div>
-                <span class="quota-pct" class:low={account.quota?.hourly_percent < 20}
-                  >{account.quota?.hourly_percent || 0}%</span
+                <span
+                  class="quota-pct"
+                  class:low={Number.isFinite(account.quota?.hourly_percent) &&
+                    account.quota.hourly_percent < 20}
+                  >{formatQuotaPercentage(account.quota?.hourly_percent)}</span
                 >
                 <span class="quota-reset"
                   >{formatQuotaReset(account.quota?.hourly_resets_at, nowMs)}</span
@@ -641,27 +695,36 @@
             </div>
           </div>
           <div class="account-actions">
-            <button
-              class:unavailable={!schedulable || account.is_active}
-              aria-disabled={!schedulable || account.is_active}
-              onclick={() => requestAccountActivation(account, schedulable)}
-              title={!sel
-                ? '请先启用该账号'
-                : !schedulable
-                  ? '5h 和 7d 剩余额度必须都大于 0'
-                  : account.is_active
-                    ? '当前正在调度此账号'
-                    : '从此账号开始循环调度'}
-            >
-              切换
-            </button>
-            <button
-              onclick={() => refreshAccount(account.id)}
-              disabled={refreshingIds.has(account.id)}
-              aria-label="刷新 {account.email || accountTitle(account)}"
-            >
-              刷新
-            </button>
+            {#if account.requires_reauth}
+              <button
+                class="primary reauth-action"
+                onclick={() => loginWithBrowser(account.id)}
+                disabled={browserLoggingIn}
+                aria-label="重新登录 {account.email || accountTitle(account)}">重新登录</button
+              >
+            {:else}
+              <button
+                class:unavailable={!schedulable || account.is_active}
+                aria-disabled={!schedulable || account.is_active}
+                onclick={() => requestAccountActivation(account, schedulable)}
+                title={!sel
+                  ? '请先启用该账号'
+                  : !schedulable
+                    ? '5h 和 7d 剩余额度必须都大于 0'
+                    : account.is_active
+                      ? '当前正在调度此账号'
+                      : '从此账号开始循环调度'}
+              >
+                切换
+              </button>
+              <button
+                onclick={() => refreshAccount(account.id)}
+                disabled={refreshingIds.has(account.id)}
+                aria-label="刷新 {account.email || accountTitle(account)}"
+              >
+                刷新
+              </button>
+            {/if}
             <button
               class={sel ? 'danger' : 'primary'}
               onclick={() => toggleAccount(account.id, !sel)}
@@ -703,6 +766,12 @@
   .actions {
     display: flex;
     gap: 8px;
+  }
+
+  .reauth-indicator {
+    color: #fca5a5;
+    font-size: 11px;
+    font-weight: 600;
   }
 
   .import-panel {
@@ -983,6 +1052,10 @@
   }
   .account-actions button {
     width: 64px;
+  }
+  .account-actions .reauth-action {
+    grid-column: span 2;
+    width: 100%;
   }
   .account-actions button.unavailable {
     cursor: not-allowed;

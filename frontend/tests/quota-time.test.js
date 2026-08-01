@@ -20,6 +20,6 @@ test('已到期和缺少重置时间使用稳定显示', () => {
   const reset = new Date(2026, 6, 31, 14, 5, 0).getTime() / 1000;
 
   expect(formatQuotaReset(reset, now)).toBe('0d 0:00 (7/31 14:05)');
-  expect(formatQuotaReset(null, now)).toBe('-- (--)');
-  expect(formatQuotaReset('invalid', now)).toBe('-- (--)');
+  expect(formatQuotaReset(null, now)).toBe('--');
+  expect(formatQuotaReset('invalid', now)).toBe('--');
 });

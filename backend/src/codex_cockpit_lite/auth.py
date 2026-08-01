@@ -28,6 +28,10 @@ class OAuthRefreshError(RuntimeError):
     """The stored refresh token could not produce a new access token."""
 
 
+class OAuthReauthRequiredError(OAuthRefreshError):
+    """The authorization service rejected the stored credential chain."""
+
+
 _refresh_locks_guard = threading.Lock()
 _refresh_locks: dict[str, threading.Lock] = {}
 
@@ -121,15 +125,11 @@ def _token_expired(token: str) -> bool:
 def _refresh_oauth_token(
     tokens: AuthTokens, account_id: str, config_dir: Path | None = None
 ) -> str:
-    try:
-        return force_refresh_oauth_token(
-            account_id,
-            config_dir,
-            observed_access_token=tokens.access_token,
-        )
-    except OAuthRefreshError as error:
-        logger.error("OAuth refresh failed for account %s: %s", account_id, error)
-        return tokens.access_token
+    return force_refresh_oauth_token(
+        account_id,
+        config_dir,
+        observed_access_token=tokens.access_token,
+    )
 
 
 def _atomic_write_auth_file(path: Path, raw: dict) -> None:
@@ -167,6 +167,20 @@ def _refresh_error_detail(response: httpx.Response) -> str:
     return response.reason_phrase or "unknown OAuth error"
 
 
+def _refresh_rejection_requires_login(response: httpx.Response, detail: str) -> bool:
+    normalized = detail.lower()
+    markers = (
+        "invalid_grant",
+        "refresh_token_invalidated",
+        "token_invalidated",
+        "token_revoked",
+        "session has ended",
+        "sign in again",
+        "log in again",
+    )
+    return response.status_code in {400, 401} and any(marker in normalized for marker in markers)
+
+
 def force_refresh_oauth_token(
     account_id: str,
     config_dir: Path | None = None,
@@ -192,7 +206,7 @@ def force_refresh_oauth_token(
         if observed_access_token and tokens.access_token != observed_access_token:
             return tokens.access_token
         if not tokens.refresh_token:
-            raise OAuthRefreshError("账号缺少 refresh_token; 请重新登录")
+            raise OAuthReauthRequiredError("账号缺少 refresh_token; 请重新登录")
 
         try:
             response = httpx.post(
@@ -209,7 +223,10 @@ def force_refresh_oauth_token(
 
         if not response.is_success:
             detail = _refresh_error_detail(response)
-            raise OAuthRefreshError(f"OAuth 刷新被拒绝 ({response.status_code}): {detail}")
+            message = f"OAuth 刷新被拒绝 ({response.status_code}): {detail}"
+            if _refresh_rejection_requires_login(response, detail):
+                raise OAuthReauthRequiredError(message)
+            raise OAuthRefreshError(message)
 
         try:
             data = response.json()
