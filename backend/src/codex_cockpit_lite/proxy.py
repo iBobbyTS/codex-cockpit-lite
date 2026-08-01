@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -14,7 +15,12 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .auth import build_auth_headers, build_search_headers
+from .auth import (
+    OAuthRefreshError,
+    build_auth_headers,
+    build_search_headers,
+    force_refresh_oauth_token,
+)
 from .config import list_selected_accounts, load_config
 from .models import SpeedMode
 from .quota import refresh_quota
@@ -372,38 +378,93 @@ async def _proxy_with_retry(
         client: httpx.AsyncClient | None = None
         try:
             client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
-            if is_sse:
-                upstream_req = client.build_request(
-                    method=request.method,
-                    url=upstream_url,
-                    content=body,
-                    headers=req_headers,
-                )
-                upstream_resp = await client.send(upstream_req, stream=True)
-            else:
-                upstream_resp = await client.request(
-                    method=request.method,
-                    url=upstream_url,
-                    content=body,
-                    headers=req_headers,
+            refreshed_after_401 = False
+            while True:
+                start = time.time()
+                if is_sse:
+                    upstream_req = client.build_request(
+                        method=request.method,
+                        url=upstream_url,
+                        content=body,
+                        headers=req_headers,
+                    )
+                    upstream_resp = await client.send(upstream_req, stream=True)
+                else:
+                    upstream_resp = await client.request(
+                        method=request.method,
+                        url=upstream_url,
+                        content=body,
+                        headers=req_headers,
+                    )
+
+                duration_ms = int((time.time() - start) * 1000)
+                record_request(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "timestamp": time.time(),
+                        "account_id": account["id"],
+                        "account_email": account["email"],
+                        "method": request.method,
+                        "path": request.url.path,
+                        "model": _extract_model(body),
+                        "status": upstream_resp.status_code,
+                        "duration_ms": duration_ms,
+                    }
                 )
 
-            duration_ms = int((time.time() - start) * 1000)
+                if upstream_resp.status_code != 401 or refreshed_after_401:
+                    break
 
-            # Log the request
-            record_request(
-                {
-                    "id": str(uuid.uuid4()),
-                    "timestamp": time.time(),
-                    "account_id": account["id"],
-                    "account_email": account["email"],
-                    "method": request.method,
-                    "path": request.url.path,
-                    "model": _extract_model(body),
-                    "status": upstream_resp.status_code,
-                    "duration_ms": duration_ms,
-                }
-            )
+                authorization = next(
+                    (value for name, value in headers.items() if name.lower() == "authorization"),
+                    "",
+                )
+                observed_access_token = authorization.removeprefix("Bearer ")
+                rejected_content = (
+                    await _read_and_close_upstream(upstream_resp, client)
+                    if is_sse
+                    else upstream_resp.content
+                )
+                rejected_headers = _build_downstream_headers(
+                    upstream_resp.headers,
+                    decoded=True,
+                )
+                if not is_sse:
+                    await client.aclose()
+                client = None
+                refreshed_after_401 = True
+
+                try:
+                    await asyncio.to_thread(
+                        force_refresh_oauth_token,
+                        account["id"],
+                        config_dir,
+                        observed_access_token=observed_access_token or None,
+                    )
+                except OAuthRefreshError as error:
+                    logger.warning(
+                        "OAuth refresh after 401 failed for %s: %s",
+                        account["email"],
+                        error,
+                    )
+                    return Response(
+                        content=rejected_content,
+                        status_code=401,
+                        headers=rejected_headers,
+                    )
+
+                logger.info("OAuth refresh after 401 succeeded for %s; retrying", account["email"])
+                headers = auth_header_builder(account["id"], config_dir)
+                if apply_speed_header and cfg.api.speed == SpeedMode.FAST:
+                    headers["service_tier"] = "priority"
+                if extra_headers:
+                    headers.update(extra_headers)
+                req_headers = _build_upstream_headers(
+                    request_headers,
+                    headers,
+                    add_originator=add_originator,
+                )
+                client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
 
             # Check for rate limiting
             if upstream_resp.status_code == 429:

@@ -21,6 +21,7 @@ from codex_cockpit_lite.api import get_config_dir_info, set_api_config_dir
 from codex_cockpit_lite.auth import (
     _token_expired,
     build_auth_headers,
+    force_refresh_oauth_token,
     parse_auth_file,
     validate_chatgpt_auth,
 )
@@ -170,6 +171,51 @@ def test_auth_headers_include_codex_oauth_context(tmp_path: Path) -> None:
     assert headers["Authorization"].startswith("Bearer ")
     assert headers["ChatGPT-Account-Id"] == "account-1"
     assert "Originator" not in headers
+
+
+def test_force_refresh_updates_rotated_tokens_in_account_auth_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    account_path = tmp_path / "accounts" / "account-1"
+    account_path.mkdir(parents=True)
+    raw = chatgpt_auth()
+    old_access = raw["tokens"]["access_token"]
+    (account_path / "auth.json").write_text(json.dumps(raw))
+
+    calls = 0
+
+    def fake_post(url, *, data, timeout):
+        nonlocal calls
+        calls += 1
+        assert url == "https://auth.openai.com/oauth/token"
+        assert data["refresh_token"] == "refresh-token"
+        assert timeout == 25.0
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "new-access-token",
+                "refresh_token": "rotated-refresh-token",
+                "id_token": "new-id-token",
+            },
+        )
+
+    monkeypatch.setattr("codex_cockpit_lite.auth.httpx.post", fake_post)
+
+    refreshed = force_refresh_oauth_token("account-1", tmp_path, observed_access_token=old_access)
+    reused = force_refresh_oauth_token("account-1", tmp_path, observed_access_token=old_access)
+    saved = json.loads((account_path / "auth.json").read_text())
+
+    assert refreshed == "new-access-token"
+    assert reused == "new-access-token"
+    assert calls == 1
+    assert saved["tokens"] == {
+        "id_token": "new-id-token",
+        "access_token": "new-access-token",
+        "refresh_token": "rotated-refresh-token",
+        "account_id": "account-1",
+    }
+    assert saved["last_refresh"].endswith("Z")
+    assert not list(account_path.glob("auth.*.tmp"))
 
 
 def test_upstream_headers_replace_case_variant_auth_without_duplicates() -> None:
@@ -705,6 +751,199 @@ async def test_models_use_chatgpt_codex_upstream(monkeypatch: pytest.MonkeyPatch
         "upstream_url": "https://chatgpt.com/backend-api/codex/models",
         "is_sse": False,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_sse", [False, True])
+async def test_401_forces_oauth_refresh_updates_account_auth_and_retries_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, is_sse: bool
+) -> None:
+    account_id = "account-1"
+    account_path = tmp_path / "accounts" / account_id
+    account_path.mkdir(parents=True)
+    raw = chatgpt_auth()
+    old_access = raw["tokens"]["access_token"]
+    new_access = jwt.encode(
+        {"exp": int(time.time()) + 7200},
+        "test-key-with-at-least-thirty-two-bytes",
+        algorithm="HS256",
+    )
+    (account_path / "auth.json").write_text(json.dumps(raw))
+    save_meta(
+        AccountMeta(
+            id=account_id,
+            email="test@example.com",
+            quota=QuotaSnapshot(weekly_percent=50, hourly_percent=50),
+        ),
+        tmp_path,
+    )
+    cfg = load_config(tmp_path)
+    cfg.api.selected_accounts = [account_id]
+    save_config(cfg, tmp_path)
+    activate_account(account_id, tmp_path)
+
+    upstream_authorizations: list[str] = []
+    refresh_calls = 0
+
+    class FakeStream(httpx.AsyncByteStream):
+        def __init__(self, content: bytes) -> None:
+            self.content = content
+
+        async def __aiter__(self):
+            yield self.content
+
+    class FakeRequest:
+        method = "POST"
+
+        class url:
+            path = "/v1/responses"
+            query = ""
+
+        def __init__(self) -> None:
+            self.headers = {}
+
+        async def body(self) -> bytes:
+            return b'{"model":"gpt-5.6-terra"}'
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        async def respond(self, authorization: str, *, stream: bool = False) -> httpx.Response:
+            upstream_authorizations.append(authorization)
+            if authorization == f"Bearer {old_access}":
+                status = 401
+                content = b'{"error":{"code":"token_revoked"}}'
+            else:
+                status = 200
+                content = b'{"ok":true}'
+            if stream:
+                return httpx.Response(status, stream=FakeStream(content))
+            return httpx.Response(status, content=content)
+
+        async def request(self, **kwargs):
+            return await self.respond(kwargs["headers"]["authorization"])
+
+        def build_request(self, *, method, url, content, headers):
+            return httpx.Request(method, url, content=content, headers=headers)
+
+        async def send(self, request, *, stream):
+            assert stream is True
+            return await self.respond(request.headers["authorization"], stream=True)
+
+        async def aclose(self) -> None:
+            return None
+
+    def fake_post(url, *, data, timeout):
+        nonlocal refresh_calls
+        del url, timeout
+        refresh_calls += 1
+        assert data["refresh_token"] == "refresh-token"
+        return httpx.Response(
+            200,
+            json={
+                "access_token": new_access,
+                "refresh_token": "rotated-refresh-token",
+            },
+        )
+
+    monkeypatch.setattr(proxy_module.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr("codex_cockpit_lite.auth.httpx.post", fake_post)
+
+    response = await proxy_module._proxy_with_retry(
+        FakeRequest(),
+        "https://chatgpt.com/backend-api/codex/responses",
+        tmp_path,
+        is_sse=is_sse,
+        max_retries=0,
+    )
+    saved = json.loads((account_path / "auth.json").read_text())
+
+    assert response.status_code == 200
+    if is_sse:
+        assert b"".join([chunk async for chunk in response.body_iterator]) == b'{"ok":true}'
+    else:
+        assert response.body == b'{"ok":true}'
+    assert upstream_authorizations == [f"Bearer {old_access}", f"Bearer {new_access}"]
+    assert refresh_calls == 1
+    assert saved["tokens"]["access_token"] == new_access
+    assert saved["tokens"]["refresh_token"] == "rotated-refresh-token"
+
+
+@pytest.mark.asyncio
+async def test_401_refresh_rejection_preserves_auth_and_original_upstream_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    account_id = "account-1"
+    account_path = tmp_path / "accounts" / account_id
+    account_path.mkdir(parents=True)
+    raw = chatgpt_auth()
+    original_json = json.dumps(raw)
+    (account_path / "auth.json").write_text(original_json)
+    save_meta(
+        AccountMeta(
+            id=account_id,
+            email="test@example.com",
+            quota=QuotaSnapshot(weekly_percent=50, hourly_percent=50),
+        ),
+        tmp_path,
+    )
+    cfg = load_config(tmp_path)
+    cfg.api.selected_accounts = [account_id]
+    save_config(cfg, tmp_path)
+    activate_account(account_id, tmp_path)
+    upstream_calls = 0
+
+    class FakeRequest:
+        method = "POST"
+
+        class url:
+            path = "/v1/responses"
+            query = ""
+
+        def __init__(self) -> None:
+            self.headers = {}
+
+        async def body(self) -> bytes:
+            return b"{}"
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        async def request(self, **kwargs):
+            nonlocal upstream_calls
+            del kwargs
+            upstream_calls += 1
+            return httpx.Response(
+                401,
+                content=b'{"error":{"code":"token_revoked"}}',
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    def fake_post(url, *, data, timeout):
+        del url, data, timeout
+        return httpx.Response(
+            400,
+            json={"error": {"code": "invalid_grant", "message": "Login required"}},
+        )
+
+    monkeypatch.setattr(proxy_module.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr("codex_cockpit_lite.auth.httpx.post", fake_post)
+
+    response = await proxy_module._proxy_with_retry(
+        FakeRequest(),
+        "https://chatgpt.com/backend-api/codex/responses",
+        tmp_path,
+        max_retries=0,
+    )
+
+    assert response.status_code == 401
+    assert response.body == b'{"error":{"code":"token_revoked"}}'
+    assert upstream_calls == 1
+    assert json.loads((account_path / "auth.json").read_text()) == json.loads(original_json)
 
 
 @pytest.mark.parametrize(
