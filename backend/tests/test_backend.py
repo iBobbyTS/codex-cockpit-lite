@@ -1002,9 +1002,26 @@ async def test_quota_failure_clears_cached_percentages_and_dates(
     assert saved.quota == QuotaSnapshot()
 
 
+@pytest.mark.parametrize(
+    ("refresh_error_code", "refresh_error_message"),
+    [
+        (
+            "refresh_token_invalidated",
+            "Your session has ended. Please log in again.",
+        ),
+        (
+            "refresh_token_reused",
+            "Your refresh token has already been used to generate a new access token. "
+            "Please try signing in again.",
+        ),
+    ],
+)
 @pytest.mark.asyncio
 async def test_quota_401_with_invalid_refresh_marks_account_for_reauth(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    refresh_error_code: str,
+    refresh_error_message: str,
 ) -> None:
     account_id = "account-1"
     account_path = tmp_path / "accounts" / account_id
@@ -1039,8 +1056,8 @@ async def test_quota_401_with_invalid_refresh_marks_account_for_reauth(
             401,
             json={
                 "error": {
-                    "code": "refresh_token_invalidated",
-                    "message": "Your session has ended. Please log in again.",
+                    "code": refresh_error_code,
+                    "message": refresh_error_message,
                 }
             },
         )
@@ -1053,7 +1070,7 @@ async def test_quota_401_with_invalid_refresh_marks_account_for_reauth(
 
     assert saved is not None
     assert saved.requires_reauth is True
-    assert "refresh_token_invalidated" in saved.reauth_reason
+    assert refresh_error_code in saved.reauth_reason
     assert saved.quota == QuotaSnapshot()
 
 

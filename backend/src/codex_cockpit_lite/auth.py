@@ -172,6 +172,7 @@ def _refresh_rejection_requires_login(response: httpx.Response, detail: str) -> 
     markers = (
         "invalid_grant",
         "refresh_token_invalidated",
+        "refresh_token_reused",
         "token_invalidated",
         "token_revoked",
         "session has ended",
